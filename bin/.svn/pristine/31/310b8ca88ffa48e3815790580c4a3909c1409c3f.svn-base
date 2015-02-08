@@ -1,0 +1,311 @@
+(:
+dcat.mod.xq - creates a document catalog 
+
+Input parameters specifies one or more directories, positive and/or
+negative name patterns, a switch determining whether subdirectories
+are considered too, the format (xml or text). A further
+parameter controls whether the name of the (root) directory
+is prepended before the file name. If the parameter "expression"
+is used, only XML files are considered for which the expression
+evaluates to true (effective boolean value).
+
+@param a whitespace seperated list of directories
+@param patterns whitespace separated list of name patterns to be included and/or excluded
+@param deep if true, the files of subdirectories are considered, too
+@param xmlbase if set, the value will be written into an xml:base attribute at the root element
+@param relative if true, the file names are relative to the root directory from
+       where they were found, otherwise the root directory is prepended
+@param expression if specified, only files are considered which are XML
+   and for which the expression evaluates to true (effective boolean value)
+@param prefix if set, each this prefix is prepended before each path
+@param withdirs if true, the file list contains also directories, otherwise only fils
+@param format if text, file names are rendered in plain text, one name per line,
+       otherwise as XML document
+@return a file list in XML format
+
+@version 20121120-A
+==================================================================================
+:)
+(:~XXX@interface
+<interface>
+    <operations>
+        <operation name="dcat" func="getDocumentCat">     
+            <param name="dcat" type="dcat" required="true"/>           
+            <param name="echo" type="xs:boolean" default="false"/>
+        </operation>
+        <operation name="docs" func="getDocuments">     
+            <param name="docs" type="docDFD" required="true"/>            
+            <param name="echo" type="xs:boolean" default="false"/>
+        </operation>
+    </operations>
+    <operationsDoc>
+        <operationDoc name="dcat">     
+            <paramDoc name="docFilter"/>      
+            <paramDoc name="echo"/>
+        </operationDoc>
+    </operationsDoc>
+</interface>    
+:)
+
+module namespace m="http://www.ttools.org/xquery-functions";
+
+import module namespace i="http://www.ttools.org/xquery-functions" at
+    "_nameFilter_parser.mod.xq",
+    "_nameFilter.mod.xq";
+
+declare namespace z="http://www.ttools.org/structure";
+
+(: 
+(:~
+ : Returns a document catalog for a given directory filter descriptor.
+ : The directory filter descriptor is supplied by parameter
+ : 'dcat'. 
+ :
+ : @param request the request object
+ : @return the document catalog
+ :)
+declare function m:getDocumentCatXXX($request as element())
+        as element() {        
+    let $dcat := i:getParam($request, 'dcat')
+    return $dcat
+};
+
+(:~
+ : Returns the documents identified by a directory filter descriptor.
+ : The directory filter descriptor is supplied by parameter
+ : 'docs'. If exactyl one document is found, it is returned
+ : without wrapper element; otherwise, a wrapper element containing
+ : the documents is returned.
+ :
+ : @param request the request object
+ : @return the documents
+ :)
+declare function m:getDocumentsXXX($request as element())
+        as element() {        
+    let $docs := i:getParam($request, 'docs')
+    return
+        if (count($docs) eq 1) then $docs/* else
+            <z:documents count="{count($docs)}">{$docs}</z:documents>
+};
+:)
+
+(:~
+ : Resolves a directory filter descriptor, delivering the filtered documents.
+ :
+ : @param docDFD a directory filter descriptor
+ : @param load if true, the filtered documents are returned, otherwise
+ :    a catalog containing the filtered document URIs
+ : @return the filtered documents, or a catalog of filtered document URIs
+ :)
+declare function m:resolveDocDFD($docDFD as xs:string?)
+        as element()? {
+    if (not($docDFD)) then () else
+    let $dcat := m:parseDocDFD($docDFD)
+    return
+        m:resolveDcat($dcat)
+};
+
+(:~
+ : Resolves a directory filter descriptor, delivering a document catalog.
+ : The document catalog contains for each found document a 'doc' element
+ : with a @href attribute.
+ :
+ : @param docDFD a directory filter descriptor
+ : @param load if true, the filtered documents are returned, otherwise
+ :    a catalog containing the filtered document URIs
+ : @return the filtered documents, or a catalog of filtered document URIs
+ :)
+declare function m:parseDocDFD($dfd as xs:string?)
+        as element()? {
+    if (not($dfd)) then () else
+    
+    let $items := m:_getItemFields(normalize-space($dfd))
+    return
+        (: special case - only one item => interpreted as path/fileNames (e.g. /a/b/c/*.xml) :)
+        if (count($items) eq 1) then
+            let $dirFiles := replace($items, '\\', '/', 's')
+            let $dirs := replace($dirFiles, '(^.*)/.*', '$1', 's')
+            let $files := replace($dirFiles, '^.*/', '')
+            let $subDirs := ()
+            let $query := ()
+            return
+                m:resourceCat(true(), $dirs, $files, $subDirs, $query, ())
+        else
+            let $dirs := replace($items[1], '\\', '/', 's')
+            let $files := $items[2]
+            let $subDirs := $items[3]
+            let $query := $items[4]
+            return
+                m:resourceCat(true(), $dirs, $files, $subDirs, $query, ())
+};
+
+(:~
+ : Resolves a directory filter descriptor, delivering a document catalog.
+ : The document catalog contains for each resource a 'doc' element with
+ : a @href attribute. The documents are assumed to be text documents.
+ :
+ : @param dfd a directory filter descriptor; structured string with the
+ :    following fields: directories, file name filter, sub directory filter,
+ :    encoding.
+ : @return the document catalog
+ :)
+declare function m:parseTextDFD($dfd as xs:string?)
+        as element()? {
+    if (not($dfd)) then () else
+    
+    let $items := m:_getItemFields(normalize-space($dfd))
+    let $dirs := $items[1]
+    let $files := $items[2]
+    let $subDirs := $items[3]
+    let $encoding := $items[4]
+    return
+        m:resourceCat(false(), $dirs, $files, $subDirs, (), $encoding)
+};
+
+(:~
+ : Resolves a directory filter descriptor, delivering a document catalog.
+ : The document catalog contains for each resource a 'doc' element with
+ : a @href attribute. The documents are assumed to be CSV records.
+ :
+ : @param dfd a directory filter descriptor; structured string with the
+ :    following fields: directories, file name filter, sub directory filter,
+ :    encoding, CSV separator (default: ,), CSV delimiter (default: "),
+ :    start row number (default: 1), end row number (default: -1, meaning
+ :    all records).
+ : @return the document catalog
+ :)
+declare function m:parseCsvDFD($dfd as xs:string?)
+        as element()? {
+    if (not($dfd)) then () else
+    
+    let $items := m:_getItemFields(normalize-space($dfd))
+    let $dirs := $items[1]
+    let $files := $items[2]
+    let $subDirs := $items[3]
+    let $encoding := $items[4]
+    let $sep := ($items[5], ',')[1]    
+    let $delim := ($items[6], '"')[1]
+    let $from := ($items[7], '1')[1]    
+    let $to := ($items[8], '2')[1]    
+    let $dcat :=
+        m:resourceCat(false(), $dirs, $files, $subDirs, (), $encoding)
+    return
+        element {node-name($dcat)} {
+            $dcat/@*,
+            attribute sep {$sep},
+            attribute delim {$delim},                            
+            attribute from {$from},                            
+            attribute to {$to},
+            $dcat/node()                            
+        }    
+};
+
+(:~
+ : Resolves a dcat to the documents referenced.
+ :
+ : @param dcat the dcat document (document node
+ :    or root element)
+ : @return the document nodes of all referenced
+ :    documents
+ :)
+declare function m:resolveDcat($dcat as node()?)
+        as document-node()* { 
+    let $dcat := $dcat/descendant-or-self::*[1]    
+    for $uri in $dcat//@href/resolve-uri(., base-uri(..)) 
+    return doc($uri)        
+};
+
+declare function m:resourceCat($onlyXml as xs:boolean?,
+                               $dirs as xs:string,
+                               $files as xs:string?,
+                               $subDirs as xs:string?,                               
+                               $query as xs:string?, 
+                               $encoding as xs:string?)
+        as element()? {      
+    let $attMediaType :=
+        attribute mediaType {if ($onlyXml) then 'text/xml' else 'text/plain'}
+    let $attEncoding :=
+        if (not($encoding) or $onlyXml) then () else attribute encoding {$encoding}
+    let $fileNameFilter as element()? := 
+        if (not($files)) then () else m:parseNameFilter($files)
+    let $subDirFilter as element()? :=
+        if (not($subDirs)) then () else m:parsePathFilter($subDirs)    
+    return
+        let $errors := ($fileNameFilter, $subDirFilter)/self::z:errors
+        return
+            if ($errors) then
+                if (count($errors) gt 1) then 
+                    <z:errors>{($fileNameFilter, $subDirFilter)/z:error}</z:errors>
+                else $errors 
+        else
+
+    let $base := file:parent(static-base-uri())
+    let $base := file:path-to-uri($base)    
+    let $xmlbase := if ($base) then attribute xml:base {replace($base, '\\', '/')} else ()
+        
+    let $foundFiles :=
+        for $dirSpec in tokenize(normalize-space($dirs), '\s+')
+        let $deep := starts-with($dirSpec, '^')
+        let $dir := replace($dirSpec, '^\^', '')
+        let $dir := if ($base) then resolve-uri($dir, $base) else resolve-uri($dir)
+        return
+            m:_getFiles($dir, $deep, $fileNameFilter, $subDirFilter, $onlyXml, $query)
+    let $dcat :=
+        <dcat dirs="{$dirs}" files="{$files}" subDirs="{$subDirs}" 
+              countFiles="{count($foundFiles)}" t="{current-dateTime()}">{
+            $xmlbase,
+            $attMediaType,
+            $attEncoding,
+            for $f in $foundFiles 
+            order by lower-case($f/@href)  
+            return $f
+        }</dcat>
+
+    return
+        $dcat
+};
+
+declare function m:_getFiles($dir as xs:string, 
+                             $deep as xs:boolean,                           
+                             $fileNameFilter as element(nameFilter)?,
+                             $subDirFilter as element(pathFilter)?,                            
+                             $onlyXml as xs:boolean?,
+                             $query as xs:string?)
+        as element()* {
+    let $dir := replace($dir, '([^/\\])$', '$1/')
+    let $dirContent := file:list($dir) ! concat($dir, .)
+    let $dirFiles := $dirContent[not(file:is-dir(.))]
+    let $dirSubDirs := if (not($deep)) then () else $dirContent[file:is-dir(.)] ! replace(., '\\$', '/')
+                
+    let $ownFiles :=
+        let $dirCheck:=
+            if (not($subDirFilter)) then true() else
+                let $dirPath := replace(replace(replace($dir, 'file:/+', ''), '[a-zA-Z]:', ''), '(/|\\)$', '')
+                return
+                    i:matchesPathFilter($dirPath, $subDirFilter)
+        return if (not($dirCheck)) then () else
+        
+        for $file in $dirFiles
+        let $fileName := file:name($file)
+        let $fileNorm := replace($file, '\\', '/')       
+        let $queryCondition as xs:boolean? :=
+            if (not($query)) then 
+                if ($onlyXml) then doc-available($fileNorm) else true()
+            else if (not(doc-available($fileNorm))) then false()
+            else
+                let $bindings := map{ '' := doc($fileNorm)[1]} 
+                return
+                    boolean(xquery:eval($query, $bindings))
+        where (not($fileNameFilter) or i:matchesNameFilter($fileName, $fileNameFilter))
+            and $queryCondition
+        return
+            <doc href="{$fileNorm}"/>
+    return (
+        $ownFiles,
+        if (not($deep)) then () else
+        for $sdir in $dirSubDirs
+        where not($subDirFilter) or i:matchesPathFilter(file:name($sdir), $subDirFilter)
+        return 
+            m:_getFiles($sdir, $deep, $fileNameFilter, $subDirFilter, $onlyXml, $query)     
+    )            
+};

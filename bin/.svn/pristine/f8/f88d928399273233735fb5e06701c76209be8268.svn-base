@@ -1,0 +1,1016 @@
+(:~
+ : _request.mod.xq - functions for loading and reading request data
+ :
+ : @version 20140214-1 first version 
+ : ===================================================================================
+ :)
+
+module namespace m="http://www.ttools.org/xquery-functions";
+
+import module namespace i="http://www.ttools.org/xquery-functions" at
+   "_extensions.mod.xq",
+   "_request_getters.mod.xq",   
+   "_dcat.mod.xq",
+   "_help.mod.xq",   
+   "_stringTools.mod.xq",   
+   "_reportAssistent.mod.xq",   
+   "_errorAssistent.mod.xq",   
+   "_valueValidator.mod.xq",   
+   "_constants.mod.xq";   
+
+declare namespace z="http://www.ttools.org/structure";
+
+(:~
+ : Parses a request string into a data structure.
+ : 
+ : @param request the request string
+  : @return an element representing the request
+ :)
+declare function m:loadRequest($request as xs:string, $serviceModel as element()?)
+        as element() {
+(:        
+    if (replace($request, '\s', '') eq '?') then <_help/> else
+:)    
+    let $msg1 := m:_parseRequest($request)
+    let $msg2 := m:_normalizeOperationName($msg1, $serviceModel)
+    let $errors := $msg2/z:errors    
+    return if ($errors) then $errors else    
+    
+    let $operationName := $msg2/local-name(.)
+    let $rawConfig := $serviceModel//operation[@name eq $operationName]        
+    let $config := m:_augmentOperationConfig($rawConfig)
+    let $errors := $config/z:errors    
+    return if ($errors) then $errors else
+    
+    let $msg3 := m:_normalizeParamNames($msg2, $config)
+    let $errors := $msg3/z:errors    
+    return if ($errors) then $errors else    
+
+    let $msg4 := m:_addDefaultValues($msg3, $config)
+    let $msg5 := m:_itemizeParamValues($msg4, $config)
+    let $msg6 := m:_parseParamValues($msg5, $config)
+    let $groupErrors := m:_checkParamGroups($msg6, $config, $serviceModel)
+    let $errorsAll :=
+        let $collected := ($msg6/z:errors/*, $groupErrors/*)
+        return
+            if (empty($collected)) then () else
+                <z:errors>{$collected}</z:errors>
+    return
+        if ($errorsAll) then $errorsAll else $msg6 
+};
+
+(:~
+ : Parses a request string into a data structure.
+ : 
+ : @param request the request string
+  : @return an element representing the request
+ :)
+declare function m:_parseRequest($request as xs:string)
+      as element() {
+    let $request :=
+        let $req := replace($request, '^\s+|\s+$', '')
+        return
+            if (starts-with($req, '?')) then
+                concat('_help', $req[string-length(.) gt 1])
+            else $req                
+                
+    let $operation := replace($request, '\s*\?.*', '', 's')
+    let $params := 
+        if (not(contains($request, '?'))) then () else
+        replace($request, '^.*?\?\s*', '', 's')
+    let $storeq := starts-with($params, '?')
+    let $params := if ($storeq) then replace($params, '^\?\s*', '') else $params
+    let $storeqAtt := if (not($storeq)) then () else attribute storeq {true()}
+    (: let $items := m:_getParamItemRC($params) :)  
+    let $items := m:_splitString($params, ',', ())
+    let $items :=
+        for $item in $items return
+        if (not(contains($item, '='))) then
+            if (starts-with($item, '~')) then <param name="{substring($item, 2)}" value="false"/>
+            else <param name="{$item}" value="true"/>
+        else
+            let $name := replace($item, '^(.*?)\s*=.*', '$1', 's')
+            let $value := replace($item, '^.*?=\s*', '', 's')
+            return
+                <param name="{$name}" value="{$value}"/>
+    
+    return
+        <request operation="{$operation}" params="{$params}">{$storeqAtt, $items}</request>
+};
+
+(:~
+ : Replaces the parsed operation name by the normalized operation name which
+ : it identifies.
+ : 
+ : May produce the following errors:
+ :    UNKNOWN_OPERATION_NAME
+ :    AMBIGUOUS_OPERATION_NAME
+ :
+ : @param parsed an element representing the name/value pairs obtained by parsing the 
+ :    request string
+ : @param serviceModel a definition of all service operations
+ : @return an element representing the parsed and name-normalized request string
+ :)
+declare function m:_normalizeOperationName($params as element(), $serviceModel as element()?)
+        as element() {
+    if (not($serviceModel)) then $params else
+    
+    (: operation name :)
+    let $rawName := $params/@operation
+    let $candidateNames := for $n in $serviceModel//operation/@name order by lower-case($n) return $n
+    let $matchingNames := i:_matchingNames($rawName, $candidateNames)
+    let $opName := 
+        if (count($matchingNames) eq 1) then $matchingNames 
+        else if (count($matchingNames) eq 0) then
+            <z:error type="UNKNOWN_OPERATION_NAME" name="{$rawName}"
+                validNames="{$candidateNames}"
+                msg="{concat('Unknown operation name (', $rawName, 
+                '); valid names: ', string-join($candidateNames, ' '))}"/>
+        else
+            <z:error type="AMBIGUOUS_OPERATION_NAME" name="{$rawName}"
+                matchingNames="{string-join($matchingNames, ', ')}"
+                msg="{concat('Ambiguous operation name (', $rawName,
+                '); matching names: ', string-join($matchingNames, ', '))}"/>
+    return
+        if ($opName instance of element(z:error)) then 
+            <__UNKNOWN__>{<z:errors>{$opName}</z:errors>}</__UNKNOWN__> 
+        else    
+            element {$opName} {$params/(@*, node())}
+};
+
+(:~
+ : Normalizes parameter names.
+ : 
+ : Error policy: in case of errors, error diagnostics are not delivered as top level 
+ : elements, but as a `z:errors` child of the response root element. The results of
+ : successful evaluations are thus preserved and delivered together with any 
+ : error diagnostics, making them accessible to subsequent checks. The rationale
+ : is to enable as comprehensive error reports as possible.
+ : 
+ : May produce the following errors:
+ :    UNKNOWN_PARAMEER_NAME
+ :    AMBIGUOUS_PARAMETER_NAME
+ :
+ : @param parsed an element representing the name/value pairs obtained by parsing the 
+ :    request string
+ : @param serviceModel a definition of all service operations
+ : @return an element representing the parsed and name-normalized request string
+ :)
+declare function m:_normalizeParamNames($params as element(), $config as element()?)
+        as element() {
+    if (not($config)) then $params else    
+               
+    let $normParams :=
+        for $param in $params/param
+        let $rawName := $param/@name
+        let $candidateNames := for $n in $config/param/@name order by lower-case($n) return $n
+        let $matchingNames := i:_matchingNames($rawName, $candidateNames)
+        return
+            if (count($matchingNames) eq 1) then 
+                <param name="{$matchingNames}" value="{$param/@value}"/>
+            else if (count($matchingNames) eq 0) then
+                <z:error type="UNKNOWN_PARAMETER_NAME" name="{$rawName}"
+                    validNames="{$candidateNames}" msg="{concat('Unknown parameter name (', $rawName, '); ',
+                    'valid names: ', string-join($candidateNames, ' '))}"/>
+            else
+                <z:error type="AMBIGUOUS_PARAMETER_NAME" name="{$rawName}"
+                    matchingNames="{string-join($matchingNames, ', ')}"
+                    msg="{concat('Ambiguous parameter name (', $rawName, 
+                    '); matching names: ', string-join($matchingNames, ', '))}"/>            
+    let $errors := $normParams/self::z:error
+    let $normalizedParams := $normParams except $errors    
+    let $errorsAll := if (not($errors)) then () else <z:errors>{$errors}</z:errors>            
+    return
+        element {node-name($params)} {$params/@storeq, $normParams, $errorsAll}
+};
+
+(:~
+ : Adds parameters set to default values to the parameters set explicitly.
+ : 
+ : @param params an element whose child elements represent the parameters set explicitly
+ : @return an element whose child elements represent all parameters, including those set 
+ :    explicitly and those set to default values
+ :)
+declare function m:_addDefaultValues($params as element(), 
+                                     $config as element())
+        as element() {
+    let $paramNames := $params/param/@name
+    let $defaultParams := $config/param[@default][not(@name = $paramNames)]
+    return 
+        if (not($defaultParams)) then $params else
+            element {node-name($params)} {
+                $params/@*,
+                $params/*,
+                for $dparam in $defaultParams return
+                    <param name="{$dparam/@name}" value="{$dparam/@default}"/>
+            }
+};
+
+(:~
+ : Itemizes parameter values, replacing the concatenated parameter text by a
+ : representation which allows access to the text of each inidividual
+ : parameter value item.
+ :
+ : Note that the item text is made accessible, but is not yet parsed according 
+ : to the item type.
+ : 
+ : @param parsed an element representing the parsed request string
+ : @return intermediate representation of the request in which external parameter 
+ :    values are itemized
+ :)
+declare function m:_itemizeParamValues($params as element(), 
+                                       $config as element())
+        as element() {
+    let $itemizedParams :=
+        for $param in $params/param
+        let $paramConfig := $config/param[@name eq $param/@name]
+        let $maxOccurs as xs:integer := $paramConfig/@maxOccurs/xs:integer(.)
+        let $multiple as xs:boolean := $maxOccurs lt 0 or $maxOccurs gt 1
+        let $rawItem := $param/@value/string(.)
+        let $sep := 
+            if (not($multiple)) then ()
+            (: there are types for which the item separator is pre-defined to be a semicolon :)
+            else if ($paramConfig/@itemType = ('docDFD')) then 'SC'
+            (: for other types the separator is specified by @sep, defaulting to 'WS' :)
+            else ($paramConfig/@sep, 'WS')[1]
+        let $sep := replace($sep, '\\s\+', '\\s')
+        let $sep := replace($sep, '^WS$', '\\s')
+        let $sep := replace($sep, '^SC', ';\\s*')        
+        let $items :=
+            if (not($multiple)) then $rawItem
+            else if ($sep eq '\s') then tokenize(normalize-space($rawItem), '\s')
+            else m:_itemizeValue($param/@value, $sep)
+        let $sepAtt := 
+            if (count($items) gt 1 and $sep eq '\s') then attribute sep {'\s'}
+            else ()
+        return
+            element {node-name($param)} {
+                $param/@name,
+                attribute paramText {$rawItem},
+                $paramConfig/@itemType,
+                $paramConfig/@cardinality[string(.)],
+                $sepAtt,
+                if (count($items) eq 1) then $rawItem
+                else if ($sep eq '\s') then string-join($items, ' ')
+                else for $item in $items return <value>{$item}</value>
+            }           
+    return
+        element {node-name($params)} {        
+            $params/@*,
+            $itemizedParams,
+            $params/(* except param)
+        }
+};
+
+(:~
+ : Parses and validates the parameter values and writes the final XML representation 
+ : of the request.
+ :
+ : Error policy: in case of errors, error diagnostics are not delivered as top level 
+ : elements, but as a `z:errors` child of the response root element. The results of
+ : successful evaluations are thus preserved and delivered together with any 
+ : error diagnostics, making them accessible to subsequent checks. The rationale
+ : is to enable as comprehensive error reports as possible.
+ : 
+ : @param valuesDetermined an intermediate representation of the request containing the not yet parsed
+ :    and not yet validated parameter values
+ : @opConfig the operation config
+ : @serviceModel the service config
+ : @return an element representing the request in which each parameter is represented by the 
+ :    result of parsing and validating the original value
+ :)
+declare function m:_parseParamValues($params as element(), 
+                                     $config as element())
+        as element()* {
+        
+    (: check for missing parameters :)
+    let $missingParamErrors :=
+        for $p in $config/param[@minOccurs/xs:integer(.) gt 0]
+                               [not(@name = $params/param/@name)]                                    
+        return
+            <z:error type="MISSING_PARAMETER" paramName="{$p/@name}"
+                msg="{concat('Missing parameter: ', $p/@name, 
+                    '; cardinality=', $p/@minOccurs, '-', $p/@maxOccurs/replace(., '-1', 'INF'))}"/>
+                    
+    (: check for cardinality errors, parse and validate the parameter values :)                    
+    let $parsedParamsAndErrors :=   
+        for $param in $params/param
+        let $name := $param/@name/string(.)
+        let $paramText := $param/@paramText
+        let $valueItems := m:_getUnparsedParamItems($param)        
+        let $paramConfig := $config/param[@name eq $name]
+
+        let $minOccurs := $paramConfig/@minOccurs/xs:integer(.)[. ge 0]
+        let $maxOccurs := $paramConfig/@maxOccurs/xs:integer(.)[. ge 0]        
+        let $type := $paramConfig/@type
+        let $itemType := $paramConfig/@itemType
+        let $cardinalityError := 
+            if (count($valueItems) lt $minOccurs or count($valueItems) gt $maxOccurs) then
+                let $sep := ($paramConfig/@sep, '\s')[1] return
+                <z:error type="INVALID_PARAMETER_CARDINALITY" paramName="{$name}" paramType="{$type}" 
+                    itemCount="{count($valueItems)}" itemSeperator="{$sep}"
+                    msg="{concat('Invalid parameter cardinality; actOccurs=', count($valueItems), '; minOccurs=', $minOccurs,
+                     '; maxOccurs=', $maxOccurs)}"/>
+            else ()                
+
+        return (
+            $cardinalityError,
+            m:_parseParamValue($name, $paramText, $valueItems, $itemType, $paramConfig)
+        )       
+    let $cardinalityAndTypeErrors := $parsedParamsAndErrors/(self::z:error, self::z:errors)
+    let $parsedParams := $parsedParamsAndErrors except $cardinalityAndTypeErrors
+    
+    let $errorsAll := i:wrapErrors(($params/z:errors, $missingParamErrors, $cardinalityAndTypeErrors))
+    return
+        element {node-name($params)} {
+            $params/@storeq,        
+            $parsedParams,
+            $errorsAll
+        }
+};
+
+(:~
+ : Parses a parameter value into a structure representation. The
+ : representation is an element whose name is the parameter name and
+ : whose text content or item children represent the parsed value items.
+ :
+ : Error policy: in case of errors, a `z:errors`element is returned,
+ : rather than an element named after the parameter and containing
+ : the value items.
+ :
+ : @param name name the parameter name
+ : @param value the parameter value
+ : @param itemType the parameter type
+ : @param paramConfig the parameter configuration
+ : @return a "param" element capturing the information content
+ :    of the parameter value
+ :)
+declare function m:_parseParamValue($name as xs:string, 
+                                    $paramText as xs:string,
+                                    $value as xs:string+, 
+                                    $itemType as xs:string, 
+                                    $paramConfig as element()?)
+        as element()* {
+        
+    let $edits := $paramConfig/@edit/(for $item in tokenize(normalize-space(.), '\s') return $item)
+    let $postEdits := $paramConfig/@postEdit/(for $item in tokenize(normalize-space(.), '\s') return $item)        
+    let $typedValue :=              
+        for $item in $value 
+        let $itemText := m:_prepareParamValueItemText($item, $edits)
+        let $typedItem := m:_parseParamValueItem($item, $itemType, $name)
+        let $validationErrors :=            
+            if (not($paramConfig) or 
+                $typedItem instance of element(z:error) or 
+                $typedItem instance of element(z:errors)) then () 
+            else if ($itemType = ('DocDFD')) then ()
+            else m:_checkFacets($itemText, $typedItem, $paramConfig)
+        return
+            if ($validationErrors) then $validationErrors else $typedItem
+    let $paramErrors := $typedValue[. instance of element(z:error) or . instance of element(z:errors)]                    
+    let $paramValue := if ($paramErrors) then () else $typedValue
+    
+    let $isValueNodes as xs:boolean := some $v in $paramValue satisfies $v instance of node()
+    let $isValueSingleton as xs:boolean := count($paramValue) le 1
+    
+    let $concatenate as xs:boolean :=
+        not($paramErrors) and 
+            not($isValueNodes) and 
+            not($isValueSingleton) and 
+            not(exists($value[matches(string(.), '\s')]))
+    let $paramValueNodes as node()* :=
+        if ($paramErrors) then () 
+        else if ($isValueNodes) then
+            if ($isValueSingleton) then $paramValue else 
+                $paramValue/<value>{.}</value>
+        else
+            if (empty($paramValue)) then ()
+            else if ($isValueSingleton) then text {$paramValue}           
+            else if ($concatenate) then 
+                text {string-join(for $i in $paramValue return string($i), ' ')}
+            else                    
+                for $item in $paramValue return <value>{$item}</value>
+
+    let $errors := if (not($paramErrors)) then () else
+        <z:errors>{
+            for $err in $paramErrors return if ($err/self::z:errors) then $err/* else $err
+        }</z:errors>
+    let $useItemType := m:adaptItemTypeOfNonStandardItemType($itemType)    
+    return
+        if ($errors) then $errors else
+        element {$name} {
+            (: attribute type {$type}, :)
+            attribute itemType {$useItemType},
+            if ($itemType eq $useItemType) then () else attribute origItemType {$itemType},
+            attribute paramText {$paramText},
+            if (not($isValueNodes)) then () else attribute nodeItems {'true'},
+            if ($concatenate and not($isValueSingleton)) then attribute sep {'\s'} else (),
+            $paramValueNodes
+        }
+};
+
+(:~
+ : Parses a parameter value string into a sequence of items.
+ : 
+ : @param request the request string
+ : @return an element representing the request
+ :)
+declare function m:_itemizeValue($value as xs:string, $sepChar as xs:string)
+      as xs:string* {
+    m:_itemizeValueRC($value, $sepChar)
+};
+
+(:~
+ : Recursive helper function of `_itemizeValue`. Extracts the next
+ : value item and recursively calls itself for processing the
+ : remainder of the value string, if there is a remainder.
+ :
+ : @param value the value string
+ : @return the value items
+ :) 
+declare function m:_itemizeValueRC($value as xs:string?, $sepChar as xs:string)
+        as xs:string* {
+    if (empty($value)) then () else
+    let $item := 
+        replace($value, concat('^(.*?[^\\](\\\\)*)?', $sepChar, '($|[^', $sepChar, '].*)'), '$1', 's')    
+    let $next := if ($item eq $value) then () else
+        replace(substring($value, string-length($item) + 2), '^\s+', '')
+    return (
+        replace(replace($item, '\\\\', '\\'), concat('\\', $sepChar), m:_escapeReplacementString($sepChar)),
+        if (empty($next)) then () else m:_itemizeValueRC($next, $sepChar)
+    )            
+};        
+
+(:~
+ : Prepares the text of a single parameter item for parsing.
+ :
+ : @param item the parameter item text
+ : @return the parameter item as a typed item
+ :)
+declare function m:_prepareParamValueItemText($item as xs:string, $edits as xs:string*)
+        as xs:string {
+    let $itemChopped := replace(replace($item, '^\s+|\s+$', ''), '\\s', ' ')
+    let $itemText :=
+        if (empty($edits)) then $itemChopped else m:_editItem($itemChopped, $edits)
+    return
+        $itemText
+};
+
+(:~
+ : Parses the text of a single parameter item and returns a typed item.
+ : Examples of result item types:
+ : - xs:string
+ : - xs:integer
+ : - xs:date
+ : - element(nameFilter)
+ : - element(dcat)
+ :
+ : Error policy: in case of errors, a `z:error` element is returned,
+ : rather than a data item.
+ :
+ : @param item the parameter item text
+ : @return the parameter item as a typed item
+ :)
+declare function m:_parseParamValueItem($itemText as xs:string, $itemType as xs:string, $name as xs:string)
+        as item()* {
+    let $typedItem := m:_parseParamValueItem_builtin($itemText, $itemType, $name)
+    return if (exists($typedItem)) then $typedItem else
+    
+    let $typedItem :=
+        (: *** nameFilter, nameFilterMap, pathFilter 
+               ------------------------------------- :)
+        if ($itemType eq 'nameFilter') then            
+            let $nameFilter := i:parseNameFilter($itemText) return
+            if ($nameFilter and not($nameFilter/self::z:errors)) then $nameFilter else
+                m:createStandardTypeError($name, $itemType, $itemText, ': nameFilter syntax error')
+(:                
+                <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': not a valid nameFilter.')}"/>
+:)                     
+        else if (matches($itemType, '^nameFilterMap(\(.*\))?$')) then            
+            let $nameFilterMap := i:parseNameFilterMap($itemText, $itemType) return
+            if ($nameFilterMap and not($nameFilterMap/self::z:errors)) then $nameFilterMap else
+                m:createStandardTypeError($name, $itemType, $itemText, ': nameFilterMap syntax error')
+(:                
+                <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': not a valid nameFilter map.')}"/>
+:)                     
+        else if ($itemType eq 'pathFilter') then            
+            let $pathFilter := i:parsePathFilter($itemText) return
+            if ($pathFilter and not($pathFilter/self::z:errors)) then $pathFilter else
+                m:createStandardTypeError($name, $itemType, $itemText, ': pathFilter syntax error')
+(:                
+                <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': not a valid pathFilter.')}"/>
+:)                     
+        else if ($itemType eq 'docURI') then            
+            if (doc-available($itemText)) then $itemText else     
+                m:createStandardTypeError($name, $itemType, $itemText, ': no XML document at this location')
+        else if ($itemType eq 'docFLX') then            
+            if (doc-available($itemText)) then $itemText else     
+                m:createStandardTypeError($name, $itemType, $itemText, ': no XML document at this location')
+        else if ($itemType eq 'docCAT') then
+            if (doc-available($itemText)) then 
+                let $root := doc($itemText)/*
+                return
+                    if (local-name($root) eq 'docs' and namespace-uri($root) eq '') then $itemText else
+                        m:createStandardTypeError($name, $itemType, $itemText, ': document at this location not a dcat document')
+(:                        
+                        <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                             itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': document at this location (', 
+                             $itemText, ') is not a dcat document.')}"/>
+:)                             
+            else              
+                m:createStandardTypeError($name, $itemType, $itemText, ': no dcat document at this location')
+(:                
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no dcat document at this location (', 
+                     $itemText, ').')}"/>
+:)
+
+(:#xq30ge#:)
+        else if ($itemType eq 'txtURI') then
+            let $itext := replace($itemText, '\\', '/')
+            let $fields := i:_getItemFields($itext)
+            let $encoding := ($fields[2], 'ISO-8859-1')[1]
+            let $uri := $fields[1]
+            return        
+                if (unparsed-text-available($uri, $encoding)) then $itext else               
+                    <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                        itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no text resource at this location (',
+                     $uri, ').')}"/>
+        else if ($itemType eq 'csvURI') then
+            let $modifierScheme := i:getParamModifierScheme('csvURI')
+            let $vamod := trace( i:_getValueAndModifiers($itemText, $modifierScheme) , 'VAMOD(csvURI): ')
+            return
+                if ($vamod/z:error) then             
+                    <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" 
+                         itemType="{$itemType}" ItemValue="{$itemText}" 
+                         msg="{concat('Parameter ''', $name, ''': ', string-join($vamod/z:error/@msg, '; '))}"/>
+                else                     
+            let $uri := replace($vamod, '\\', '/')
+            let $encoding := ($vamod/@encoding, 'ISO-8859-1')[1]            
+            return        
+                if (unparsed-text-available($uri, $encoding)) then $vamod
+                else               
+                    <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                        itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no text resource at this location (',
+                        $uri, ').')}"/>                         
+                    
+        else if ($itemType eq 'txtLinesURI') then   
+            let $itext := replace($itemText, '\\', '/')
+            let $fields := m:_getItemFields($itext)
+            let $encoding := ($fields[2], 'ISO-8859-1')[1]
+            let $uri := $fields[1]
+            return
+                if (unparsed-text-available($uri, $encoding)) then $itext else               
+                    <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                         itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no text resource at this location (',
+                         $uri, ').')}"/>
+                     
+(:#xq30ge file#:)                     
+        else if ($itemType eq 'txtDFD') then
+            let $dcat := i:parseTxtDFD($itemText) return            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>                       
+        else if ($itemType eq 'txtLinesDFD') then
+            let $dcat := i:parseTxtDFD($itemText) return            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>
+        else if ($itemType eq 'wtxDFD') then
+            let $dcat := i:parseTxtDFD($itemText) return            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>                       
+                     
+        else if ($itemType eq 'csvDFD') then
+            let $modifierScheme := i:getParamModifierScheme('csvURI')        
+            let $fimod := trace( i:_getValueFieldsAndModifiers($itemText, $modifierScheme) , 'FIMOD(csvDVD): ')
+            return
+                if ($fimod/z:error) then             
+                    <z:error type="INVALID_PARAMETER_TYPE" subType="TYPE_ERROR" paramName="{$name}" 
+                         itemType="{$itemType}" ItemValue="{$itemText}" 
+                         msg="{concat('Parameter ''', $name, ''': ', string-join($fimod/z:error/@msg, '; '))}"/>
+                else                     
+            let $dcat := i:parseCsvDFD($fimod) return
+            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat
+            else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>                       
+
+(:#file#:)                    
+        else if ($itemType eq 'dfd') then
+            let $dcat := i:parseDocDFD($itemText) return            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>                       
+
+        else if ($itemType eq 'docDFD') then
+            let $dcat := i:parseDocDFD($itemText) return            
+            if ($dcat and not($dcat/self::z:errors)) then $dcat else               
+                <z:error type="INVALID_PARAMETER_TYPE" subType="SYNTAX_ERROR" paramName="{$name}" itemType="{$itemType}" 
+                     itemValue="{$itemText}" msg="{concat('Parameter ''', $name, ''': no valid directory filter descriptor; ',
+                     'msg=', string-join($dcat//@msg, '# '))}"/>                       
+
+        (: *** directory 
+               --------- :)           
+        else if ($itemType eq 'directory') then  
+            let $itext := replace($itemText, '\\', '/')
+            let $value := resolve-uri($itext, static-base-uri())
+            let $value := file:resolve-path($value)
+            return $value
+(:##:)
+
+        else i:parseNonStandardItemType($name, $itemType, $itemText)
+    return
+        $typedItem
+};
+
+declare function m:_parseParamValueItem_builtin($itemText as xs:string, $itemType as xs:string, $name as xs:string)
+        as item()? {
+    let $typedItem := 
+        if ($itemType eq 'xs:string') then $itemText
+        else if ($itemType eq 'xs:normalizedString') then
+            if ($itemText castable as xs:normalizedString) then xs:normalizedString($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:token') then
+            if ($itemText castable as xs:token) then xs:token($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:language') then
+            if ($itemText castable as xs:language) then xs:language($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:NMTOKEN') then
+            if ($itemText castable as xs:NMTOKEN) then xs:NMTOKEN($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:Name') then
+            if ($itemText castable as xs:Name) then xs:Name($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:NCName') then
+            if ($itemText castable as xs:NCName) then xs:NCName($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:ID') then
+            if ($itemText castable as xs:ID) then xs:ID($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:IDREF') then
+            if ($itemText castable as xs:IDREF) then xs:IDREF($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:dateTime') then
+            if ($itemText castable as xs:dateTime) then xs:dateTime($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:date') then
+            if ($itemText castable as xs:date) then xs:date($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:time') then
+            if ($itemText castable as xs:time) then xs:time($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:duration') then
+            if ($itemText castable as xs:duration) then xs:duration($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:yearMonthDuration') then
+            if ($itemText castable as xs:yearMonthDuration) then xs:yearMonthDuration($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:dayTimeDuration') then
+            if ($itemText castable as xs:dayTimeDuration) then xs:dayTimeDuration($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:float') then
+            if ($itemText castable as xs:float) then xs:float($itemText) else               
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:double') then
+            if ($itemText castable as xs:double) then xs:double($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:decimal') then
+            if ($itemText castable as xs:decimal) then xs:decimal($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:integer') then
+            if ($itemText castable as xs:integer) then xs:integer($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:nonPositiveInteger') then
+            if ($itemText castable as xs:nonPositiveInteger) then xs:nonPositiveInteger($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:negativeInteger') then
+            if ($itemText castable as xs:negativeInteger) then xs:negativeInteger($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:long') then
+            if ($itemText castable as xs:long) then xs:long($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:int') then
+            if ($itemText castable as xs:int) then xs:int($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:short') then
+            if ($itemText castable as xs:short) then xs:short($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:byte') then
+            if ($itemText castable as xs:byte) then xs:byte($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:nonNegativeInteger') then
+            if ($itemText castable as xs:nonNegativeInteger) then xs:nonNegativeInteger($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:unsignedLong') then
+            if ($itemText castable as xs:unsignedLong) then xs:unsignedLong($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:unsignedInt') then
+            if ($itemText castable as xs:unsignedInt) then xs:unsignedInt($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:unsignedShort') then
+            if ($itemText castable as xs:unsignedShort) then xs:unsignedShort($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:unsignedByte') then
+            if ($itemText castable as xs:unsignedByte) then xs:unsignedByte($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)                
+        else if ($itemType eq 'xs:positiveInteger') then
+             if ($itemText castable as xs:positiveInteger) then xs:positiveInteger($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)             
+        else if ($itemType eq 'xs:gYearMonth') then
+            if ($itemText castable as xs:gYearMonth) then xs:gYearMonth($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:gYear') then
+            if ($itemText castable as xs:gYear) then xs:gYear($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:gMonthDay') then
+            if ($itemText castable as xs:gMonthDay) then xs:gMonthDay($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:gDay') then
+            if ($itemText castable as xs:gDay) then xs:gDay($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)            
+        else if ($itemType eq 'xs:gMonth') then
+            if ($itemText castable as xs:gMonth) then xs:gMonth($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+        else if ($itemType eq 'xs:boolean') then
+            if ($itemText castable as xs:boolean) then xs:boolean($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)           
+        else if ($itemType eq 'xs:base64Binary') then
+            if ($itemText castable as xs:base64Binary) then xs:base64Binary($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)           
+        else if ($itemType eq 'xs:hexBinary') then
+            if ($itemText castable as xs:hexBinary) then xs:hexBinary($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)           
+        else if ($itemType eq 'xs:anyURI') then
+            if ($itemText castable as xs:anyURI) then xs:anyURI($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+(:#xq30ge#:)                
+        else if ($itemType eq 'xs:QName') then
+            if ($itemText castable as xs:QName) then xs:QName($itemText) else
+                m:createStandardTypeError($name, $itemType, $itemText)
+(:##:)                
+        else ()                    
+    return
+        $typedItem
+};
+
+(:~
+ : Edits a parameter value item.
+ : Currently supported editing:
+ : lc - to lowercase
+ : uc - to uppercase
+ :
+ : @param item parameter value item
+ : @param edits controls the editing
+ : @return the edited value item
+ :)
+declare function m:_editItem($item as xs:string?, $edits as xs:string*)
+        as xs:string? {
+    if (not($item)) then () else
+    
+    let $s := $item
+    let $s := if ($edits = 'lc') then lower-case($s) else $s
+    let $s := if ($edits = 'uc') then upper-case($s) else $s
+    return
+        $s    
+};
+
+(:~
+ : Validates a parameter value item against parameter facets.
+ :
+ : Error policy: in case of errors, a `z:errors` element is returned,
+ : rather than a data item. 
+ :)
+declare function m:_checkFacets($itemText as xs:string, $typedItem as item()+, $paramConfig as element()?)
+        as element()* {
+    if (not($paramConfig)) then ()
+    else if ($typedItem instance of element(z:error) or $typedItem instance of element(z:errors))  then () else
+    
+    let $itemType := $paramConfig/@itemType
+    let $name := $paramConfig/@name
+        
+    let $errors :=            
+        if ($itemType = ('DocDFD')) then ()
+        else (            
+            (: *** check @values :)
+            if (not($paramConfig/@fct_values)) then () else
+            let $expectedItems := tokenize($paramConfig/@fct_values, ',\s*')
+            return
+                if ($itemText = $expectedItems) then () else  
+                    m:createFacetError($name, 'values', $paramConfig/@fct_values, $itemText, 
+                        '; the item value must be equal to one of these comma-separated values')
+            ,
+            (: *** check @pattern :)
+            if (not($paramConfig/@fct_pattern)) then () else
+            let $patternSpec := $paramConfig/@fct_pattern
+            let $pattern := concat('^', replace($patternSpec, '#.*', ''), '$')
+            let $options := string(replace($patternSpec, '.*#', '')[not(. eq $patternSpec)])
+            return
+                if (matches($itemText, $pattern, $options)) then () else
+                    m:createFacetError($name, 'pattern', $paramConfig/@fct_pattern, $itemText, 
+                        '; the item value must match the pattern')                
+            ,
+            (: *** check @length :)
+            if (not($paramConfig/@fct_length)) then () else
+            let $length := $paramConfig/@fct_length/xs:integer(.)
+            return
+                if (string-length($itemText) eq $length) then () else
+                    m:createFacetError($name, 'length', $paramConfig/@fct_length, $itemText, 
+                        '; the item value must have the specified length')                
+            ,
+            (: *** check @minLength :)
+            if (not($paramConfig/@fct_minLength)) then () else
+            let $minLength := $paramConfig/@fct_minLength/xs:integer(.)
+            return
+                if (string-length($itemText) ge $minLength) then () else                   
+                    m:createFacetError($name, 'minLength', $paramConfig/@fct_minLength, $itemText, 
+                        '; the item value must have a length greater than or equal the specified minimum length')               
+            ,
+            (: *** check @maxLength :)
+            if (not($paramConfig/@fct_maxLength)) then () else
+            let $maxLength := $paramConfig/@fct_maxLength/xs:integer(.)
+            return
+                if (string-length($itemText) le $maxLength) then () else                  
+                    m:createFacetError($name, 'maxLength', $paramConfig/@fct_maxLength, $itemText, 
+                        '; the item value must have a length less than or equal the specified maximum length')               
+            ,
+            (: *** check @min :)
+            if (not($paramConfig/@fct_min)) then () else
+            let $min := 
+                if ($itemType eq 'xs:date') then $paramConfig/@fct_min/xs:date(.)
+                else if ($itemType eq 'xs:time') then $paramConfig/@fct_min/xs:time(.)                
+                else if ($itemType eq 'xs:dateTime') then $paramConfig/@fct_min/xs:dateTime(.)
+                else $paramConfig/@fct_min/number(.)               
+            return
+                if ($typedItem ge $min) then () else                   
+                    m:createFacetError($name, 'min', $paramConfig/@fct_min, $itemText, 
+                        '; the item value must have a value greater than or equal the specified minimum value')
+            ,
+            (: *** check @minEx :)
+            if (not($paramConfig/@fct_minEx)) then () else
+            let $minEx := 
+                if ($itemType eq 'xs:date') then $paramConfig/@fct_minEx/xs:date(.)
+                else if ($itemType eq 'xs:time') then $paramConfig/@fct_minEx/xs:time(.)                
+                else if ($itemType eq 'xs:dateTime') then $paramConfig/@fct_minEx/xs:dateTime(.)
+                else $paramConfig/@fct_minEx/number(.)               
+            return
+                if ($typedItem gt $minEx) then () else                   
+                    m:createFacetError($name, 'minEx', $paramConfig/@fct_minEx, $itemText, 
+                        '; the item value must have a value greater than the specified exclusive minimum value')
+            ,
+            (: *** check @max :)
+            if (not($paramConfig/@fct_max)) then () else
+            let $max :=
+                if ($itemType eq 'xs:date') then $paramConfig/@fct_max/xs:date(.)
+                else if ($itemType eq 'xs:time') then $paramConfig/@fct_max/xs:time(.)                
+                else if ($itemType eq 'xs:dateTime') then $paramConfig/@fct_max/xs:dateTime(.)
+                else $paramConfig/@fct_max/number(.)               
+            return
+                if ($typedItem le $max) then () else                   
+                    m:createFacetError($name, 'max', $paramConfig/@fct_max, $itemText, 
+                        '; the item value must have a value less than or equal the specified maximum value')
+            ,
+            
+            (: *** check @maxEx :)
+            if (not($paramConfig/@fct_maxEx)) then () else
+            let $maxEx :=
+                if ($itemType eq 'xs:date') then $paramConfig/@fct_maxEx/xs:date(.)
+                else if ($itemType eq 'xs:time') then $paramConfig/@fct_maxEx/xs:time(.)                
+                else if ($itemType eq 'xs:dateTime') then $paramConfig/@fct_maxEx/xs:dateTime(.)
+                else $paramConfig/@fct_maxEx/number(.)               
+            return
+                if ($typedItem le $maxEx) then () else                   
+                    m:createFacetError($name, 'maxEx', $paramConfig/@fct_maxEx, $itemText, 
+                        '; the item value must have a value less than the specified exclusive maximum value')
+            ,
+(:#file#:)            
+            (: *** check @fileExists :)
+            if (not($paramConfig/@fct_fileExists)) then () 
+            else if ($paramConfig/@fct_fileExists eq 'true' and not(file:exists($typedItem))) then
+                m:createFacetError($name, 'fileExists', $paramConfig/@fct_fileExists, $itemText, 
+                    '; file not found')
+            else if ($paramConfig/@fileExists eq 'false' and file:exists($typedItem)) then              
+                m:createFacetError($name, 'fileExists', $paramConfig/@fct_fileExists, $itemText, 
+                    '; the file must not yet exist')
+            else (),           
+
+            (: *** check @dirExists :)
+            if (not($paramConfig/@fct_dirExists)) then () 
+            else if ($paramConfig/@fct_dirExists eq 'true' and not(file:exists($typedItem))) then              
+                m:createFacetError($name, 'dirExists', $paramConfig/@fct_dirExists, $itemText, 
+                    '; directory not found')
+            else if ($paramConfig/@fct_dirExists eq 'false' and file:exists($typedItem)) then              
+                m:createFacetError($name, 'dirExists', $paramConfig/@fct_dirExists, $itemText, 
+                    '; the directory must not yet exist')
+            else (),
+(:##:)            
+            m:checkNonStandardFacets($itemText, $typedItem, $paramConfig)
+            )
+    return
+        if (empty($errors)) then () else
+            <z:errors>{$errors}</z:errors>           
+};
+
+(:~
+ : Checks any constraints referring to parameter groups.
+ :
+ : Checks: minimum and maximum number of group members
+ : 
+ : Returns a `z:errors` element in case of errors, the empty
+ : sequence otherwise.
+ :
+ : @param parsed an element representing the parsed request string
+ : @return intermediate representation of the request in which external parameter 
+ :    values are itemized
+ :)
+declare function m:_checkParamGroups($request as element(), 
+                                     $opConfigPlus as element(), 
+                                     $serviceModel as element()?)
+        as element(z:errors)? {
+    let $errors :=
+    
+    for $g in $opConfigPlus/pgroup
+    let $gname := $g/@name
+    let $memberNames := $g/@members/tokenize(., '\s+')
+    let $actMemberNames := $request/*[local-name() = $memberNames]
+    let $actOccurs := count($actMemberNames)
+    let $minOccurs := $g/@minOccurs/xs:integer(.)    
+    let $maxOccurs := $g/@maxOccurs/xs:integer(.)    
+    return
+        (: exactly one param must be set :)
+        if ($minOccurs eq $maxOccurs) then
+            if ($actOccurs eq $minOccurs) then () else
+                <z:error type="PARAMETER_GROUP_CARDINALITY_ERROR" subType="MIN_OCCURS" paramGroupName="{$gname}" 
+                    minOccurs="{$minOccurs}" maxOccurs="{$maxOccurs}" actOccurs="{$actOccurs}">{                       
+                        attribute msg 
+                            {concat('Exactly ', $minOccurs, ' of these parameters must be set: ',
+                             string-join($memberNames, ', '), '.')}
+                }</z:error>            
+        else (       
+            if (not($g/@minOccurs)) then () else
+                if ($actOccurs ge $minOccurs) then () else
+                    <z:error type="PARAMETER_GROUP_MIN_OCCURS_ERROR" paramGroupName="{$gname}" 
+                        minOccurs="{$minOccurs}" actOccurs="{$actOccurs}">{                       
+                            attribute msg 
+                                {concat('At least ', $minOccurs, ' of these parameters must be set: ',
+                                 string-join($memberNames, ', '), '.')}
+                    }</z:error>,
+            if (not($g/@maxOccurs)) then () else
+                if ($actOccurs le $maxOccurs) then () else
+                        <z:error type="PARAMETER_GROUP_MAX_OCCURS_ERROR" paramGroupName="{$gname}" 
+                            maxOccurs="{$maxOccurs}" actOccurs="{$actOccurs}">{                       
+                                attribute msg 
+                                    {concat('At most ', $maxOccurs, ' of these parameters must be set: ', 
+                                     string-join($memberNames, ', '), '.')}
+                        }</z:error>
+        )        
+        
+    return
+        if (empty($errors)) then () else
+            <z:errors>{$errors}</z:errors>
+};
+
+  (:~
+ : Returns a control element with attributes capturing 
+ : the values of request parameters. If no name filter
+ : is specified, all parameters are used, otherwise
+ : only those matching the name filter. The attribute
+ : values are the parameter string values.
+ :
+ : Usage note. Control elements are useful if request
+ : parameters are used at a high frequence (e.g. during
+ : the item processing within a recursion), as the
+ : access to control attributes is faster than 
+ : reading request parameters. Note, however, that the
+ : control only represents the parameter string values.
+ :
+ : @param request a request element
+ : @param nameFilter an optional name filter, using name filter syntax
+ : @param removePrefixes an optional list of prefises to be
+ :    removed from the parameter names
+ : @return the control element
+ :)
+declare function m:getControl($request as element(), 
+                              $nameFilter as xs:string?, 
+                              $removePrefixes as xs:string*)
+        as element(control) {                              
+    let $names := m:getParamNames($request, $nameFilter)
+    let $useNames := m:removeStringPrefixes($names, $removePrefixes, '.')
+    return
+        <control>{
+            for $name in $useNames
+            return
+                attribute {$name} {m:getParamStringValue($request, $name)}
+        }</control>   
+};
+

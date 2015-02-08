@@ -1,0 +1,244 @@
+(:
+ : -------------------------------------------------------------------------
+ :
+ : items.mod.xq - Document me!
+ :
+ : -------------------------------------------------------------------------
+ :)
+ 
+(:~@XXXinterface
+<interface>
+   <operations>
+      <operation name="doctypes" func="doctypes" type="node()">
+         <param name="doc" type="docURI*"/>
+         <param name="docs" type="docDFD*"/>           
+      </operation> 
+      <operation name="names" func="names" type="node()">
+         <param name="doc" type="docURI*"/>
+         <param name="docs" type="docDFD*"/>           
+         <param name="values" type="xs:boolean" default="false"/>         
+      </operation> 
+      <operation name="value" func="value" type="node()">
+         <param name="doc" type="docURI*"/>
+         <param name="docs" type="docDFD*"/>           
+      </operation>
+    </operations>
+</interface>    
+:)  
+
+module namespace f="http://www.ttools.org/ttools/xquery-functions";
+import module namespace tt="http://www.ttools.org/xquery-functions" at 
+    "_request.mod.xq",
+    "_reportAssistent.mod.xq",
+    "_nameFilter.mod.xq";
+    
+declare namespace z="http://www.ttools.org/ttools/structure";
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:name($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')
+    let $docs := ($docs1, $docs2)    
+    return
+        <z:name countDocs="{count($docs)}">{
+           ()
+        }</z:name>
+};        
+ 
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:doctypes($request as element())
+        as element() {
+    let $docs as document-node()* := tt:getParams($request, ('doc', 'docs'))
+    let $doctypes :=
+        for $doc in $docs
+        let $doctype := $doc/*/concat(local-name(.), '@', namespace-uri(.))
+        group by $doctype
+        let $docRefs := 
+            let $uris := $doc/document-uri(.) 
+            return 
+                for $uri in $uris order by lower-case($uri) return <doc href="{$uri}"/>
+        return
+            <doctype name="{$doctype}">{$docRefs}</doctype>           
+    return
+        <z:doctypes countDocs="{count($docs)}" countDoctypes="{count($doctypes)}">{
+            $doctypes
+        }</z:doctypes>
+}; 
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:doctypesXXX($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')
+    let $docs := ($docs1, $docs2)    
+    return
+        <z:doctypes countDocs="{count($docs)}">{
+            for $doc in $docs
+            let $doctype := $doc/*/concat(local-name(.), '@', namespace-uri(.))
+            group by $doctype
+            let $uris := $doc/document-uri(.)
+            return
+                <doctype name="{$doctype}">{
+                    for $uri in $uris order by lower-case($uri) return <uri>{$uri}</uri>
+                }</doctype>           
+        }</z:doctypes>
+}; 
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:names($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')   
+    let $values as xs:boolean := tt:getParam($request, 'values')    
+    let $docs := ($docs1, $docs2)
+
+    let $atts := $docs//@*
+    let $elems := $docs//*
+    let $attNames := distinct-values($atts/local-name(.)) ! concat('@', .)
+    let $elemNames := distinct-values($elems/local-name(.))
+    return
+        <z:names countDocs="{count($docs)}" countAttNames="{count($atts)}" countElemNames="{count($elems)}">{
+            for $name in ($attNames, $elemNames)
+            let $valueInfo :=            
+                if (not($values)) then () else
+                
+                let $itemValues :=
+                    if (starts-with($name, '@')) then distinct-values($atts[local-name(.) eq $name])
+                    else distinct-values($elems[local-name(.) eq $name][not(*)][matches(text(), '\S')])
+                return
+                    if (empty($itemValues)) then () else
+                    for $v in $itemValues order by lower-case($v) return <val v="{$v}"/>
+           order by lower-case($name)
+           return <name n="{$name}">{$valueInfo}</name>
+        }</z:names>
+};        
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:names_version1($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')   
+    let $docs := ($docs1, $docs2)
+
+    let $atts := $docs//@*
+    let $elems := $docs//*
+    let $attNames := distinct-values($atts/local-name(.)) ! concat('@', .)
+    let $elemNames := distinct-values($elems/local-name(.))
+    return
+        <z:names countDocs="{count($docs)}" countAttNames="{count($atts)}" countElemNames="{count($elems)}">{
+           for $name in ($attNames, $elemNames)
+           order by lower-case($name)
+           return <name n="{$name}"/>
+        }</z:names>
+};        
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:names_version2($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')   
+    let $values as xs:boolean := tt:getParam($request, 'values')    
+    let $docs := ($docs1, $docs2)
+
+    let $atts := $docs//@*
+    let $elems := $docs//*
+    let $attNames := distinct-values($atts/local-name(.)) ! concat('@', .)
+    let $elemNames := distinct-values($elems/local-name(.))
+    return
+        <z:names countDocs="{count($docs)}" countAttNames="{count($atts)}" countElemNames="{count($elems)}">{
+            for $name in ($attNames, $elemNames)
+            let $valueInfo :=            
+                if (not($values)) then () else
+                
+                let $itemValues :=
+                    if (starts-with($name, '@')) then distinct-values($atts[local-name(.) eq $name])
+                    else distinct-values($elems[local-name(.) eq $name][not(*)][matches(text(), '\S')])
+                return
+                    if (empty($itemValues)) then () else
+                    for $v in $itemValues order by lower-case($v) return <val v="{$v}"/>
+           order by lower-case($name)
+           return <name n="{$name}">{$valueInfo}</name>
+        }</z:names>
+};        
+
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:names_version2b($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')
+    let $children as xs:boolean := tt:getParam($request, 'children')    
+    let $docs := ($docs1, $docs2)
+
+    let $atts := $docs//@*
+    let $elems := $docs//*
+    let $attNames := distinct-values($atts/local-name(.)) ! concat('@', .)
+    let $elemNames := distinct-values($elems/local-name(.))
+    return
+        <z:names countDocs="{count($docs)}" countAttNames="{count($atts)}" countElemNames="{count($elems)}">{
+            for $name in ($attNames, $elemNames)
+            let $childrenInfo :=
+                if (not($children) or starts-with($name, '@')) then () else
+                let $myElems := $elems[local-name(.) eq $name]
+                let $childNames := 
+                    for $n in distinct-values($myElems/*/local-name(.)) order by lower-case($n) return $n
+                return
+                    if (empty($childNames)) then () else 
+                        attribute children {$childNames}
+            order by lower-case($name)
+            return <name n="{$name}">{$childrenInfo}</name>
+        }</z:names>
+};        
+
+(:~
+ : Document me!
+ :
+ : @param request the operation request
+ : @return a report describing ...
+ :) 
+declare function f:value($request as element())
+        as element() {
+    let $docs1 as document-node()* := tt:getParam($request, 'doc')
+    let $docs2 as document-node()* := tt:getParam($request, 'docs')
+    let $docs := ($docs1, $docs2)    
+    return
+        <z:value countDocs="{count($docs)}">{
+           ()
+        }</z:value>
+};        

@@ -1,0 +1,52 @@
+(: reportAssistent.mod.xq - provides report utilities
+ :
+ : @version 20130926-1 first version 
+ : ===================================================================================
+ :)
+
+module namespace m="http://www.ttools.org/xquery-functions";
+
+import module namespace i="http://www.ttools.org/xquery-functions" at
+    "_request.mod.xq",
+    "_constants.mod.xq";
+
+declare namespace z="http://www.ttools.org/structure";
+
+(:~
+ : Returns standard items to be added to a report. These are a timestamp and
+ : an optional repetition of the request element.
+ : 
+ : @param request the request string
+ : @return the standard items
+ :)
+declare function m:getStandardItems($request as element())
+        as node()* {
+    attribute t {current-dateTime()},        
+    if (not(i:getParam($request, 'echo'))) then () else 
+        <z:request>{$request}</z:request>
+};
+
+declare function m:finalEdit($report as element()?)
+        as element()? {
+    if (not($report)) then () else m:prettyPrint($report)        
+};        
+
+declare function m:prettyPrint($n as node())
+        as node()? {
+    typeswitch($n)
+    case document-node() return 
+        for $c in $n/node() return document {m:prettyPrint($c)}
+    case element() return
+        let $elem :=
+            element {node-name($n)} {
+                for $a in $n/@* return m:prettyPrint($a),
+                for $c in $n/node() return m:prettyPrint($c)
+            }                
+        return
+            if ($n/parent::*) then $elem
+            else <_  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">{$elem}</_>/*       
+
+    case text() return
+        if ($n/.. and not(matches($n, '\S'))) then () else $n
+    default return $n
+};

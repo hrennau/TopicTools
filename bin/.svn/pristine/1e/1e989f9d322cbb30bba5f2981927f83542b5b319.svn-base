@@ -1,0 +1,157 @@
+(: builder_main.mod.xq - generates a topic tool main module 
+ :
+ : @version 20140628-1 
+ : ===================================================================================
+ :)
+
+module namespace f="http://www.ttools.org/ttools/xquery-functions";
+
+import module namespace tt="http://www.ttools.org/xquery-functions" at
+    "_constants.mod.xq",
+    "_request.mod.xq",
+    "_request_setters.mod.xq",    
+    "_reportAssistent.mod.xq",
+    "_nameFilter.mod.xq";
+    
+import module namespace i="http://www.ttools.org/ttools/xquery-functions" at
+    "builder_extensions.mod.xq",
+    "util.mod.xq";
+    
+declare namespace z="http://www.ttools.org/ttools/structure";
+
+(:~
+ : Generates the source code of the topic tool main module.
+ :)
+declare function f:makeMainModule($toolScheme as element(),
+                            $explain as xs:string?,
+                            $namespace as xs:string)
+        as xs:string {
+    let $ttname := $toolScheme/@name/string(.)
+    let $toolSchemeText := replace(string-join(serialize($toolScheme), ''), '&#xD;', '')
+    let $toolSchemeText := replace($toolSchemeText, '\{', '{{')    
+    let $toolSchemeText := replace($toolSchemeText, '\}', '}}')    
+    let $ops := $toolScheme//operation
+    let $op1 := $ops[1]
+    let $modules :=
+        let $mods := distinct-values($toolScheme//@mod[not(starts-with(., '_'))])
+        return
+            if (empty($mods)) then () else
+            concat(
+                string-join(
+                    for $m in $mods
+                    order by $m return concat('"', $m, '"')
+                 , ',&#xA;    '),
+                ';')                    
+    let $modulesBuiltin :=
+        concat(
+            string-join(
+                for $m in distinct-values($toolScheme//@mod[starts-with(., '_')])
+                order by $m return concat('"', $m, '"')
+             , ',&#xA;    '),
+            ',')                    
+     
+    let $toolText := <TEXT>
+(:
+ : {$ttname} - {$explain}
+ :
+ : @version {current-dateTime()} 
+ :)
+
+import module namespace tt="http://www.ttools.org/xquery-functions" at
+    {$modulesBuiltin}
+    "_request.mod.xq";     
+{
+if (not($modules)) then () else
+<NESTED-TEXT>
+import module namespace i="{$namespace}" at
+    {$modules}
+</NESTED-TEXT>/concat(string(), '&#xA;')
+}
+declare namespace m="http://www.ttools.org/{$ttname}/xquery-functions";
+declare namespace z="http://www.ttools.org/{$ttname}/structure";
+declare namespace zz="http://www.ttools.org/structure";
+
+declare variable $request as xs:string external;
+
+(: tool scheme 
+   ===========
+:)
+declare variable $toolScheme :=
+{$toolSchemeText};
+
+declare variable $req as element() := tt:loadRequest($request, $toolScheme);
+
+<![CDATA[
+(:~
+ : Executes pseudo operation '_storeq'. The request is stored in
+ : simplified form, in which every parameter is represented by a 
+ : parameter element whose name captures the parameter value
+ : and whose text content captures the (unitemized) parameter 
+ : value.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation__storeq($request as element())
+        as node() {
+    element {node-name($request)} {
+        attribute crTime {current-dateTime()},
+        
+        for $c in $request/* return
+        let $value := replace($c/@paramText, '^\s+|\s+$', '', 's')
+        return
+            element {node-name($c)} {$value}
+    }       
+};
+]]>
+{
+    for $op in $ops
+    let $func := ($op/@func, $op/@name)[1]/string()
+    let $resultType := ($op/@type/string(), 'node()')[1]
+    return <NESTED-TEXT>    
+(:~
+ : Executes operation '{$op/@name/string()}'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_{$op/@name/string()}($request as element())
+        as {$resultType} {{
+    {('tt'[$op/@mod/starts-with(., '_')], 'i')[1]}:{$func}($request{if ($func eq '_help') then ', $toolScheme' else ()})        
+}};
+</NESTED-TEXT>/string()
+}
+(:~
+ : Executes an operation.
+ :
+ : @param req the operation request
+ : @return the result of the operation
+ :)
+declare function m:execOperation($req as element())
+      as item()* {{
+    if ($req/self::zz:errors) then tt:_getErrorReport($req, 'Invalid call', 'type', ()) else
+    if ($req/@storeq eq 'true') then m:execOperation__storeq($req) else
+    
+    let $opName := tt:getOperationName($req) 
+    let $result :=    
+{string-join((
+    "        if ($opName eq '_help') then m:execOperation__help($req)",
+    for $op at $pos in $ops 
+    let $if := if ($pos eq 1) then 'else if' else 'else if'
+    return 
+        concat('        ', $if, ' ($opName eq ''', $op/@name/string(), ''') then m:execOperation_', $op/@name/string(), '($req)'),
+    "        else",
+    "        tt:createError('UNKNOWN_OPERATION', concat('No such operation: ', $opName), ",
+    "            <error op='{$opName}'/>)"
+ ), '&#xA;')}    
+     let $errors := tt:extractErrors($result)
+     return
+         if ($errors) then tt:_getErrorReport($errors, 'System error', 'type', ())     
+         else $result
+}};
+
+m:execOperation($req)
+    </TEXT>/replace(., '^\s+', '')
+    return
+        $toolText    
+};

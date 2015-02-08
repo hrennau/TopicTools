@@ -1,0 +1,9 @@
+v-20140615
+Ops new, build: param 'name' optional, default name = application dir; checks that implicit name is an NCName.
+
+v-20140616
+Op proto: param 'name' optional, default name = application dir; checks that implicit name is an NCName.
+New module: util.mod.xq, function: getToolName($directory, $name)
+
+v-20140618
+Refactored _getOperationConfig - shifted cardinality analysis into own function.

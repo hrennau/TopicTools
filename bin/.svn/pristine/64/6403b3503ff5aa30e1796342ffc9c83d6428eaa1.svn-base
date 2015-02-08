@@ -1,0 +1,197 @@
+(:
+ : xclear4 - 
+ :
+ : @version 2014-08-06T12:44:06.984+02:00 
+ :)
+
+import module namespace tt="http://www.ttools.org/xquery-functions" at
+    "_docs.mod.xq",
+    "_help.mod.xq",
+    "_request.mod.xq";     
+
+import module namespace i="http://www.ttools.org/xclear4/xquery-functions" at
+    "items.xqm.mod.xq";
+
+declare namespace m="http://www.ttools.org/xclear4/xquery-functions";
+declare namespace z="http://www.ttools.org/xclear4/structure";
+
+declare variable $request as xs:string external;
+
+(: tool scheme 
+   ===========
+:)
+declare variable $toolScheme :=
+<topicTool name="xclear4">
+  <operation name="names" type="node()" func="names" mod="items.xqm.mod.xq">
+    <param name="doc" type="docURI*" sep="WS" pgroup="input"/>
+    <param name="docs" type="docDFD*" sep=";" pgroup="input"/>
+    <param name="dcat" type="docCAT*" sep="WS" pgroup="input"/>
+    <pgroup name="input" minOccurs="1"/>
+  </operation>
+  <operation name="paths" type="node()" func="paths" mod="items.xqm.mod.xq">
+    <param name="doc" type="docURI*" sep="WS" pgroup="input"/>
+    <param name="docs" type="docDFD*" sep=";" pgroup="input"/>
+    <param name="dcat" type="docCAT*" sep="WS" pgroup="input"/>
+    <pgroup name="input" minOccurs="1"/>
+  </operation>
+  <operation name="values" type="node()" func="values" mod="items.xqm.mod.xq">
+    <param name="doc" type="docURI*" sep="WS" pgroup="input"/>
+    <param name="docs" type="docDFD*" sep=";" pgroup="input"/>
+    <param name="dcat" type="docCAT*" sep="WS" pgroup="input"/>
+    <pgroup name="input" minOccurs="1"/>
+  </operation>
+  <operation name="dcat" func="getDcat" type="element()" mod="_docs.mod.xq">
+    <param name="dfd" type="dfd+" sep=";"/>
+  </operation>
+  <operation name="docs" func="getDocs" type="element()+" mod="_docs.mod.xq">
+    <pgroup name="input" minMembers="1"/>
+    <param name="doc" type="docURI*" sep="WS" pgroup="input"/>
+    <param name="docs" type="docDFD*" sep=";" pgroup="input"/>
+    <param name="dcat" type="docCAT*" sep="WS" pgroup="input"/>
+  </operation>
+  <operation name="doctypes" func="getDoctypes" type="node()" mod="_docs.mod.xq">
+    <pgroup name="input" minMembers="1"/>
+    <param name="doc" type="docURI*" sep="WS" pgroup="input"/>
+    <param name="docs" type="docDFD*" sep=";" pgroup="input"/>
+    <param name="dcat" type="docCAT*" sep="WS" pgroup="input"/>
+    <param name="attNames" type="xs:boolean" default="false"/>
+    <param name="elemNames" type="xs:boolean" default="false"/>
+  </operation>
+  <operation name="_help" func="_help" mod="_help.mod.xq">
+    <param name="default" type="xs:boolean" default="false"/>
+    <param name="type" type="xs:boolean" default="false"/>
+    <param name="mode" type="xs:string" default="overview" values="overview, scheme"/>
+    <param name="ops" type="nameFilter?"/>
+  </operation>
+  <operationsDoc/>
+</topicTool>;
+
+declare variable $req as element() := tt:loadRequest($request, $toolScheme);
+
+
+(:~
+ : Executes pseudo operation '_storeq'. The request is stored in
+ : simplified form, in which every parameter is represented by a 
+ : parameter element whose name captures the parameter value
+ : and whose text content captures the (unitemized) parameter 
+ : value.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation__storeq($request as element())
+        as node() {
+    element {node-name($request)} {
+        attribute crTime {current-dateTime()},
+        
+        for $c in $request/* return
+        let $value := replace($c/@paramText, '^\s+|\s+$', '', 's')
+        return
+            element {node-name($c)} {$value}
+    }       
+};
+
+    
+(:~
+ : Executes operation 'names'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_names($request as element())
+        as node() {
+    i:names($request)        
+};
+     
+(:~
+ : Executes operation 'paths'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_paths($request as element())
+        as node() {
+    i:paths($request)        
+};
+     
+(:~
+ : Executes operation 'values'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_values($request as element())
+        as node() {
+    i:values($request)        
+};
+     
+(:~
+ : Executes operation 'dcat'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_dcat($request as element())
+        as element() {
+    tt:getDcat($request)        
+};
+     
+(:~
+ : Executes operation 'docs'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_docs($request as element())
+        as element()+ {
+    tt:getDocs($request)        
+};
+     
+(:~
+ : Executes operation 'doctypes'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation_doctypes($request as element())
+        as node() {
+    tt:getDoctypes($request)        
+};
+     
+(:~
+ : Executes operation '_help'.
+ :
+ : @param request the request element
+ : @return the operation result
+ :)
+declare function m:execOperation__help($request as element())
+        as node() {
+    tt:_help($request, $toolScheme)        
+};
+
+(:~
+ : Executes an operation.
+ :
+ : @param req the operation request
+ : @return the result of the operation
+ :)
+declare function m:execOperation($req as element())
+      as item()* {
+    if ($req/self::*:errorReport) then $req else
+    if ($req/@storeq eq 'true') then m:execOperation__storeq($req) else
+    
+    let $opName := tt:getOperationName($req) return    
+    if ($opName eq '_help') then m:execOperation__help($req)
+    else if ($opName eq 'names') then m:execOperation_names($req)
+    else if ($opName eq 'paths') then m:execOperation_paths($req)
+    else if ($opName eq 'values') then m:execOperation_values($req)
+    else if ($opName eq 'dcat') then m:execOperation_dcat($req)
+    else if ($opName eq 'docs') then m:execOperation_docs($req)
+    else if ($opName eq 'doctypes') then m:execOperation_doctypes($req)
+    else if ($opName eq '_help') then m:execOperation__help($req)
+    else
+        <z:result op='{$opName}' error='{concat("UNKNOWN OPERATION: ", $opName)}'/>         
+};
+
+m:execOperation($req)
+    

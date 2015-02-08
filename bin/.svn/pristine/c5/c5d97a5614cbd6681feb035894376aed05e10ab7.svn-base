@@ -1,0 +1,140 @@
+(:~
+ : _valueValidator.mod.xq - functions for validating a value against constraints
+ :
+ : @version 20140925-1 first version 
+ : ===================================================================================
+ :)
+
+module namespace f="http://www.ttools.org/xquery-functions";
+
+import module namespace i="http://www.ttools.org/xquery-functions" at
+   "_stringTools.mod.xq",   
+   "_constants.mod.xq";   
+
+declare namespace z="http://www.ttools.org/structure";
+
+(:~
+ : Augments an operation config:
+ : - each parameter group element is augmented by a @members attribute containing the sorted
+ :   list of member parameter names
+ : - each parameter element is augmented by four additional attributes:
+ :    @itemType - the result of removing the cardinality postfix from the type specification
+ :    @cardinality - the cardinality postfix of the type specification
+ :    @minOccurs - minimum number of occurrences
+ :    @maxOccurs - maximum number of occurrences
+ :
+ : Error policy: in case of errors, error diagnostics (error elements) are not delivered 
+ : as top level elements, but as a z:errors child of the response root element. This way, the
+ : results of successful parameter evaluations are preserved and delivered together
+ : with any error diagnostics, making them accessible to subsequent checks. The rationale
+ : is to enable as comprehensive error reports as possible.
+ :
+ : Note. This function is used to augment both, the configuration of an operation,
+ : and the configuration of a set of modifiers.
+ : 
+ : @param operationName the operation name
+ : @param serviceModel a definition of all service operations 
+  : @return an element describing the operation
+ :)
+declare function f:_augmentOperationConfig($config as element())
+        as element() {
+    let $pgroupElems := $config/pgroup
+    let $paramElems := $config/(* except pgroup)
+    
+    (: $pgroups - elements representing the parameter groups :)
+    let $pgroups :=
+        for $g in $pgroupElems
+        let $gname := $g/@name
+        let $members := $paramElems[@pgroup eq $gname]
+        let $memberNames :=
+            string-join(
+                for $member in $members order by $member/@name/lower-case(.) return $member/@name
+            , ' ')
+        return
+            element {node-name($g)} {$g/@*, attribute members {$memberNames}}
+    
+    (: $params - elements representing the parameters :)
+    let $paramsAndErrors :=
+        for $p in $paramElems
+        let $typeSpec := f:_parseTypeSpec($p/@type)
+        return
+            if ($typeSpec/self::z:error) then $typeSpec else
+            element {node-name($p)} {
+                $p/@*,
+                $typeSpec/(@typeSpec, @cardinality, @itemType, @minOccurs, @maxOccurs)
+            }
+    let $errors := $paramsAndErrors/self::z:error
+    let $params := $paramsAndErrors except $errors    
+    let $allErrors := if (not($errors)) then () else <z:errors>{$errors}</z:errors>
+    return
+        element {node-name($config)} {$config/@*, $params, $pgroups, $allErrors}
+};    
+
+(:~
+ : Parses a type specification and returns the result as an element
+ : with attributes containing various parts of the parsing result:
+ :
+ : @typeSpec - the original type spec string
+ : @cardinality - the cardinality constraint string (e.g. '?' or '{0,7}' 
+ : @itemType - the item type name
+ : @minOccurs - the minimum number of occurrences
+ : @maxOccurs - the maximum number of occurrences
+ :
+ : In case of an error, a single `z:error` element is returned, rather
+ : than a `type` element.
+ :
+ : Possible errors:
+ : INVALID_CARDINALITY_CONSTRAINT - if the constraint is syntactically incorrect
+ :
+ : @param typeSpec the type specification (e.g. 'xs:string+)
+ : @return an element with attributes delivering parsing results, or
+ :    an <z:error> element in case of a syntax error
+ :)
+declare function f:_parseTypeSpec($typeSpec as xs:string)
+        as element() {
+    let $tspec := replace($typeSpec, '\s', '')
+    let $itemType := replace($tspec, '^(\i\c*)(\((.*)\))?(.*)$', '$1')
+    let $cardinality := replace($tspec, '^(\i\c*)(\((.*)\))?(.*)$', '$4') 
+
+    let $minMax :=
+        if (not($cardinality)) then (1, 1)
+        else if ($cardinality eq '?') then (0, 1)
+        else if ($cardinality eq '*') then (0, -1)            
+        else if ($cardinality eq '+') then (1, -1)
+        else
+            let $range := replace($cardinality, '^\{(\d+,\d+|\d+,|,\d+|\d+)\}$', '$1', 's')
+            return
+                if ($range eq $cardinality) then (: syntax error :)
+                    <z:error type="PARAMETER_CARDINALITY_ERROR" typeSpec="{$tspec}"
+                         msg="{concat('Parameter cardinality error: ', $cardinality, '; typeSpec=', $tspec)}"/>
+                else
+                    if (not(contains($range, ','))) then (xs:integer($range), xs:integer($range))
+                    else
+                        let $parts := tokenize($range, '\s*,\s*')
+                        return
+                            if (not($parts[1])) then (-1, xs:integer($parts[2]))
+                            else if (not($parts[2])) then (xs:integer($parts[1]), '-1')
+                            else (xs:integer($parts[1]), xs:integer($parts[2]))
+    return
+        if ($minMax instance of element(z:error)) then $minMax else
+        
+        <type typeSpec="{$tspec}" 
+              cardinality="{$cardinality}" 
+              itemType="{$itemType}" 
+              minOccurs="{$minMax[1]}" 
+              maxOccurs="{$minMax[2]}"/>
+};
+
+(:~
+ : Retrieves the parameter modifier scheme for a given parameter type.
+ :
+ : @param typeName the type name
+ : @return the modifier scheme for this type, or the empty sequence if
+ :    there is no scheme
+ :)
+declare function f:getParamModifierScheme($typeName as xs:string)
+        as element()? {
+    trace( $i:PARAM_MODIFIER_SCHEMES/
+                modifiers[tokenize(@paramTypes, '\s+') = $typeName][last()] , 'MODIFIER_SCHEME: ')        
+};
+
