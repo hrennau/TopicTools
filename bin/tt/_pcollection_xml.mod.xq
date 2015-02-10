@@ -130,7 +130,7 @@ declare function f:_feedXmlNcat($enodl as element(pc:enodl), $request as element
         if (tt:doc-available($ncatUri)) then tt:doc($ncatUri)/*
         else f:_createXmlNcat($enodl, $request)
      
-    let $dcat := tt:getParams($request, 'dirs')
+    let $dcat := tt:getParams($request, 'docs')
     let $pnodeModel := tt:_pnodeModel($enodl)
     let $pnodes :=    
         for $href in $dcat//@href

@@ -185,7 +185,7 @@ declare function f:_deleteSqlNcat($enodl as element(pc:enodl), $request as eleme
  :) 
 declare function f:_feedSqlNcat($enodl as element(pc:enodl), $request as element())
         as element() {
-    let $dcat := tt:getParams($request, 'dirs')
+    let $dcat := tt:getParams($request, 'docs')
     let $processingPlan := f:_sqlProcessingPlan($enodl)   
     let $pnodeModel := tt:_pnodeModel($enodl)
     

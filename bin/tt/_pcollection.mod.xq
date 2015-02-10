@@ -27,7 +27,7 @@ xquery version "3.0";
       </operation>
       <operation name="_feedNcat" type="node()" func="feedNcat">     
          <param name="nodl" type="docURI" fct_rootElem="Q{http://www.infospace.org/pcollection}nodl"/> 
-         <param name="dirs" type="dfd*" sep="SC"/>
+         <param name="docs" type="dfd*" sep="SC"/>
       </operation>
       <operation name="_copyNcat" type="node()" func="copyNcat">
          <param name="nodl" type="docURI?" fct_rootElem="Q{http://www.infospace.org/pcollection}nodl"/>
