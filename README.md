@@ -3,4 +3,4 @@ A lightweight framework for developing powerful command-line tools with XQuery. 
 
 Maintenance of topic tools requires the use of the BaseX processor ( http://basex.org ). The topic tools themselves can be used with any standards conformant XQuery processor offering a command-line interface, as for example the Saxon processor ( http://www.saxonica.com ).
 
-Source code and documentation will be added soon to this site, namely before February 13, the start of the conference xmlprague 2015 (http://xmlprague.cz).
+A comprehensive user manual is under construction and will be added soon. Until then, you may consider looking at the tutorials found in the doc folder - hopefully they suffice to get you started.

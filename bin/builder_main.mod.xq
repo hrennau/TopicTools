@@ -27,6 +27,9 @@ declare function f:makeMainModule($toolScheme as element(),
                             $explain as xs:string?,
                             $namespace as element(namespace))
         as xs:string {
+    (: file:write('/projects/tt-intro/toolScheme.xml', $toolScheme), :)
+    let $tsReport := f:evalToolScheme4MainModule($toolScheme)
+    
     let $ttname := $toolScheme/@name/string(.)
     let $toolSchemeText := replace(string-join(serialize($toolScheme), ''), '&#xD;', '')
     let $toolSchemeText := replace($toolSchemeText, '\{', '{{')    
@@ -34,24 +37,35 @@ declare function f:makeMainModule($toolScheme as element(),
     let $ops := $toolScheme//operation
     let $op1 := $ops[1]
     let $ttPrefix := string-join(($i:cfg/ttSubDir, '_'), '/')
-    let $modules :=
-        let $mods := distinct-values($toolScheme//@mod[not(starts-with(., $ttPrefix))])
+    
+    let $moduleImports :=
+        for $ns in $tsReport//namespace[not(@builtin eq 'true')]
+        let $mods := $ns/modules/module/@uri
         return
-            if (empty($mods)) then () else
             concat(
+                'import module namespace ', $ns/@prefix, '="', $ns/@uri, '" at',
+                '&#xA;    ',
                 string-join(
                     for $m in $mods
                     order by $m return concat('"', $m, '"')
                  , ',&#xA;    '),
                 ';')                    
-    let $modulesBuiltin :=
-        concat(
-            string-join(
-                for $m in distinct-values($toolScheme//@mod[starts-with(., $ttPrefix)])
-                order by $m return concat('"', $m, '"')
-             , ',&#xA;    '),
-            ',')                    
-     
+
+    let $moduleImportBuiltin :=
+        let $ns := $tsReport//namespace[@builtin eq 'true']
+        let $mods := $ns/modules/module/@uri
+        return
+            concat(
+                'import module namespace ', $ns/@prefix, '="', $ns/@uri, '" at',
+                '&#xA;    ',
+                string-join(
+                    for $m in $mods
+                    order by $m return concat('"', $m, '"')
+                 , ',&#xA;    '),
+                ';',
+                '&#xA;',
+                '&#xA;')
+                
     let $toolText := <TEXT>
 (:
  : {$ttname} - {$explain}
@@ -59,16 +73,10 @@ declare function f:makeMainModule($toolScheme as element(),
  : @version {current-dateTime()} 
  :)
 
-import module namespace tt="http://www.ttools.org/xquery-functions" at
-    {$modulesBuiltin}
-    "tt/_request.mod.xq";     
-{
-if (not($modules)) then () else
-<NESTED-TEXT>
-import module namespace i="{$namespace/@func/string()}" at
-    {$modules}
-</NESTED-TEXT>/concat(string(), '&#xA;')
-}
+{string-join($moduleImportBuiltin, '&#xA;&#xA;')}
+
+{string-join($moduleImports, '&#xA;&#xA;')}
+
 declare namespace m="{$namespace/@func/string()}";
 declare namespace z="{$namespace/@struct/string()}";
 declare namespace zz="http://www.ttools.org/structure";
@@ -109,6 +117,7 @@ declare function m:execOperation__storeq($request as element())
 {
     for $op in $ops
     let $func := ($op/@func, $op/@name)[1]/string()
+    let $prefix := $tsReport//operations/operation[@name eq $op/@name]/ancestor::namespace/@prefix/string()
     let $resultType := ($op/@type/string(), 'node()')[1]
     return <NESTED-TEXT>    
 (:~
@@ -119,7 +128,7 @@ declare function m:execOperation__storeq($request as element())
  :)
 declare function m:execOperation_{$op/@name/string()}($request as element())
         as {$resultType} {{
-    {('tt'[$op/@mod/starts-with(., $ttPrefix)], 'i')[1]}:{$func}($request{if ($func eq '_help') then ', $toolScheme' else ()})        
+    {('tt'[$op/@mod/starts-with(., $ttPrefix)], $prefix)[1]}:{$func}($request{if ($func eq '_help') then ', $toolScheme' else ()})        
 }};
 </NESTED-TEXT>/string()
 }
@@ -156,4 +165,52 @@ m:execOperation($req)
     </TEXT>/replace(., '^\s+', '')
     return
         $toolText    
+};
+
+(:~
+ : Evaluates a toolScheme and creates a report supporting the
+ : generation of the application main module.
+ :
+ : @param toolScheme the tool scheme
+ : @return the namespaces etc. report
+ :) 
+declare function f:evalToolScheme4MainModule($toolScheme as element())
+        as element() {
+    let $ttNamespace := 'http://www.ttools.org/xquery-functions'
+    let $namespaces := distinct-values($toolScheme//operation/@namespace)[not(. eq $ttNamespace)]
+    let $operations := $toolScheme//operation
+    let $ttOperations := $operations[@namespace eq $ttNamespace]/@name
+    let $ttModules := distinct-values($ttOperations/../@mod)
+    let $nsElem :=
+        <namespaces>{
+            <namespace prefix="tt" uri="{$ttNamespace}" builtin="true">{
+                <modules>{
+                    for $m in $ttModules return <module uri="{$m}"/>,
+                    <module uri="tt/_request.mod.xq"/>,
+                    <module uri="tt/_help.mod.xq"/>                    
+                }</modules>, 
+                <operations>{
+                    for $o in $ttOperations return 
+                        <operation name="{$o}"/>
+                }</operations>
+            }</namespace>,
+            for $ns at $pos in $namespaces
+            let $prefix := concat('a', $pos)
+            let $myOperations := $operations[@namespace eq $ns]/@name
+            let $myModules := distinct-values($myOperations/../@mod)
+            order by $ns
+            return
+                <namespace prefix="{$prefix}" uri="{$ns}">{
+                    <modules>{
+                        for $m in $myModules order by $m return
+                            <module uri="{$m}"/>
+                    }</modules>,
+                    <operations>{
+                        for $o in $myOperations return 
+                            <operation name="{$o}"/>
+                    }</operations>
+                }</namespace>
+        }</namespaces>
+    return
+        $nsElem
 };

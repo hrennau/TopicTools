@@ -1,7 +1,9 @@
-(: toolSchemeParser.mod.xq - parses a directory and constructs a tool scheme
+(:~
+ : toolSchemeParser.mod.xq - parses a directory and constructs a tool scheme
  :
- : @version 20140826-1 
- : ===================================================================================
+ : @version 20150211-1
+ : 
+ : ############################################################################
  :)
 
 module namespace f="http://www.ttools.org/ttools/xquery-functions";
@@ -53,6 +55,7 @@ declare function f:getToolScheme($dir as xs:string, $ttname as xs:string, $featu
         for $file in $files
         let $uri := string-join(($useDir, $file), '/')
         let $text := tt:unparsed-text($uri)
+        let $ns := f:getModuleNamespace($text)
         
         (: collect annotations :)
         let $operationsElems := f:getAnnotations($text, 'operations')        
@@ -62,16 +65,17 @@ declare function f:getToolScheme($dir as xs:string, $ttname as xs:string, $featu
         let $facetsElems := f:getAnnotations($text, 'facets')    
         let $facetElems := f:getAnnotations($text, 'facet')        
         return (
-            <operations mod="{$file}">{$operationsElems}</operations>,        
-            <operation mod="{$file}">{$operationElems}</operation>,            
-            <types mod="{$file}">{$typesElems}</types>,
-            <type mod="{$file}">{$typeElems}</type>,            
-            <facets mod="{$file}">{$facetsElems}</facets>,               
-            <facet mod="{$file}">{$facetElems}</facet>            
+            <operations mod="{$file}" namespace="{$ns}">{$operationsElems}</operations>,        
+            <operation mod="{$file}" namespace="{$ns}">{$operationElems}</operation>,            
+            <types mod="{$file}" namespace="{$ns}">{$typesElems}</types>,
+            <type mod="{$file}" namespace="{$ns}">{$typeElems}</type>,            
+            <facets mod="{$file}" namespace="{$ns}">{$facetsElems}</facets>,               
+            <facet mod="{$file}" namespace="{$ns}">{$facetElems}</facet>            
         )
     let $annotationItems := 
         for $ai in $annotations/*
-        let $mod := $ai/root()/@mod/string()        
+        let $mod := $ai/root()/@mod/string() 
+        let $ns := $ai/root()/@namespace/string()
         let $kind := $ai/parent::*/local-name()
         let $childElems :=
             if ($kind eq 'operations') then 'operation'
@@ -104,12 +108,14 @@ declare function f:getToolScheme($dir as xs:string, $ttname as xs:string, $featu
                     element {node-name($child)} {
                         $child/@*,
                         attribute mod {$mod},
+                        attribute namespace {$ns},                        
                         $child/node()
                     }
             else
                 element {node-name($ai)} {
                     $ai/@*,
                     attribute mod {$mod},
+                    attribute namespace {$ns},
                     $ai/node()
                 }
     let $errors := $annotationItems/self::ztt:error     
@@ -158,4 +164,28 @@ declare function f:getAnnotations($text as xs:string, $annoName as xs:string)
             f:getAnnotations($tail, $annoName)
         )
 };
+
+(:~
+ : Extracts from the text of a library module the module namespace.
+ :
+ : @param text the module text
+ : @return the module namespace
+ :) 
+declare function f:getModuleNamespace($text as xs:string)
+        as xs:string {
+    let $noctext := f:removeModuleComments($text)
+    let $ns := replace($noctext, '.*?module\s+namespace\s+\S+\s*=\s*(''|")(.*?)\1.*', '$2', 's')
+    return $ns
+};
+
+(:~
+ : Removes comments from an XQuery code text.
+ :
+ : @param text XQuery code
+ : @return the code with all comments removed
+ :)
+declare function f:removeModuleComments($text as xs:string)
+        as xs:string {
+    $text        
+};        
 

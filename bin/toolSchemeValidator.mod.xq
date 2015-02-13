@@ -90,6 +90,7 @@ declare variable $f:attNames_operation := tokenize(normalize-space('
     type
     func
     mod
+    namespace
 '), ' ');    
 
 declare variable $f:attNames_type := tokenize(normalize-space('
@@ -97,6 +98,7 @@ declare variable $f:attNames_type := tokenize(normalize-space('
     itemType
     func
     mod
+    namespace
 '), ' ');    
 
 declare variable $f:attNames_facet := tokenize(normalize-space('
@@ -105,6 +107,7 @@ declare variable $f:attNames_facet := tokenize(normalize-space('
     types
     func
     mod
+    namespace
 '), ' ');    
 
 declare variable $f:attNames_param := tokenize(normalize-space('
