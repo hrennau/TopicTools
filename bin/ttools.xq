@@ -5,16 +5,16 @@
  :)
 
 import module namespace tt="http://www.ttools.org/xquery-functions" at
-    "tt/_rcat.mod.xq",
-    "tt/_request.mod.xq",
-    "tt/_help.mod.xq";
+    "tt/_rcat.xqm",
+    "tt/_request.xqm",
+    "tt/_help.xqm";
     
 
 import module namespace i="http://www.ttools.org/ttools/xquery-functions" at
-    "example.mod.xq",
-    "prototypeWriter.mod.xq",
-    "builder.mod.xq",
-    "util.mod.xq";    
+    "example.xqm",
+    "prototypeWriter.xqm",
+    "builder.xqm",
+    "util.xqm";    
    
 declare namespace m="http://www.ttools.org/ttools/xquery-functions";
 declare namespace z="http://www.ttools.org/ttools/structure";
@@ -27,10 +27,10 @@ declare variable $request as xs:string external;
 :)
 declare variable $toolScheme :=
 <service name="ttools">
-  <operation name="counts" func="getCounts" provider="example.mod.xq">
+  <operation name="counts" func="getCounts" provider="example.xqm">
     <param name="doc" type="docUri" required="true"/>
   </operation>
-  <operation name="items" func="getItemReport" provider="example.mod.xq">
+  <operation name="items" func="getItemReport" provider="example.xqm">
     <paramConstraints>
       <exactlyOneOf>doc dcat</exactlyOneOf>
     </paramConstraints>
@@ -46,7 +46,7 @@ declare variable $toolScheme :=
     <param name="nvalues" type="nameFilterMap"/>
     <param name="npvalues" type="nameFilterMap"/>
   </operation>
-  <operation name="add" func="addModule" type="empty-sequence()" provider="prototypeWriter.mod.xq">
+  <operation name="add" func="addModule" type="empty-sequence()" provider="prototypeWriter.xqm">
     <param name="dir" type="directory"/>
     <param name="name" type="xs:NCName?"/>
     <param name="mod" type="xs:NCName"/>
@@ -76,11 +76,11 @@ declare variable $toolScheme :=
     <param name="flavor" type="xs:string*"
         fct_pattern="basex\d\d|saxon(he|pe|ee)\d\d|xq(10|30)[fse]*"/>
   </operation>  
-  <operation name="dcat" func="getDocumentCat" provider="_rcat.mod.xq">
+  <operation name="dcat" func="getDocumentCat" provider="_rcat.xqm">
     <param name="dcat" type="dcat" required="true"/>
     <param name="echo" type="xs:boolean" default="false"/>
   </operation>
-  <operation name="docs" func="getDocuments" provider="_rcat.mod.xq">
+  <operation name="docs" func="getDocuments" provider="_rcat.xqm">
     <param name="docs" type="docDFD" required="true"/>
     <param name="echo" type="xs:boolean" default="false"/>
   </operation>
