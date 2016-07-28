@@ -15,6 +15,7 @@ declare variable $c:cfg :=
                 <module>_csvParser.xqm</module>                
                 <module>_docs.xqm</module>     
                 <module feature="basex">_foxpath.xqm</module>                
+                <module feature="basex">_foxpath-functions.xqm</module>                
                 <module feature="basex">_foxpath-parser.xqm</module>                
                 <module feature="basex">_foxpath-util.xqm</module>                
                 <module feature="basex">_foxpath-processorDependent.xqm</module>                

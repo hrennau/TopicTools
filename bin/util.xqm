@@ -229,7 +229,7 @@ declare function f:pretty($n as node())
             if ($version lt 78) then 'file-' else 'file',
             if ($version lt 78) then 'eval-' else 'eval',
             if ($version lt 78) then 'sql-' else 'sql',            
-            if ($version lt 81) then 'mongo-' else 'mongo'
+            if ($version lt 99) then 'mongo-' else 'mongo'
 
         )
     ) else if (matches($flavor, '^saxonhe\d\d')) then (
