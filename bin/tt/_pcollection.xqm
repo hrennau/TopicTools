@@ -59,8 +59,10 @@ import module namespace tt="http://www.ttools.org/xquery-functions" at
 (:#sql#:)    
     "_pcollection_sql.xqm",
 (:##:)
-(:#mongo#:)    
+(:#mongo#:)  
+(: SKIPMONGO
     "_pcollection_mongo.xqm",
+:)    
 (:##:)
     "_pcollection_utils.xqm",
     "_pcollection_xml.xqm",
@@ -135,10 +137,12 @@ declare function f:createNcat($request as element())
     let $sql := $enodl//pc:ncatModel/pc:sqlNcat
     return
         if ($sql) then f:_createSqlNcat($enodl, $request) else
-(:#mongo#:)        
+(:#mongo#:)      
+(: SKIPMONGO
     let $mongo := $enodl//pc:ncatModel/pc:mongoNcat
     return
         if ($mongo) then f:_createMongoNcat($enodl, $request) else
+:)        
 (:#|eval sql#:)           
             tt:createError('UNEXPECTED_NCAT_MODEL', 
                 concat('Child elems of ncat: ', 
@@ -161,8 +165,10 @@ declare function f:feedNcat($request as element())
         if ($nodl/pc:ncatModel/pc:xmlNcat) then f:_feedXmlNcat($enodl, $request) else  
 (:#sql#:)        
         if ($nodl/pc:ncatModel/pc:sqlNcat) then f:_feedSqlNcat($enodl, $request) else
-(:#mongo#:)        
+(:#mongo#:)  
+(: SKIPMONGO
         if ($nodl/pc:ncatModel/pc:mongoNcat) then f:_feedMongoNcat($enodl, $request) else
+:)        
 (:#|eval sql#:)        
             tt:createError('UNEXPECTED_NCAT_TYPE', concat(
                 'Unexpected ncat type: ', $nodl/@ncatType), ())
@@ -230,8 +236,10 @@ declare function f:deleteNcat($request as element())
         if ($nodl/pc:ncatModel/pc:xmlNcat) then f:_deleteXmlNcat($enodl, $request) else  
 (:#sql#:)        
         if ($nodl/pc:ncatModel/pc:sqlNcat) then f:_deleteSqlNcat($enodl, $request) else
-(:#mongo#:)        
+(:#mongo#:) 
+(: SKIPMONGO
         if ($nodl/pc:ncatModel/pc:mongoNcat) then f:_deleteMongoNcat($enodl, $request) else
+:)        
 (:#|eval sql#:)        
             tt:createError('UNEXPECTED_NCAT_TYPE', concat(
                 'Unexpected ncat type: ', $nodl/@ncatType), ())
@@ -266,9 +274,11 @@ declare function f:nodlSample($request as element())
 (:#sql#:)                    
                 if ($model eq 'sql') then
                     <sqlNcat rdbms="MySQL" host="localhost" db="DB" user="USER" password="PASSWORD"/> else        
-(:#mongo#:)                    
+(:#mongo#:) 
+(: SKIPMONGO
                 if ($model eq 'mongo') then
-                    <mongoNcat host="localhost" db="DB"/> else        
+                    <mongoNcat host="localhost" db="DB"/> else
+:)                    
 (:#|eval sql mongo#:)
                 ()
             }</ncatModel>        
@@ -310,8 +320,10 @@ declare function f:filteredCollection($nodl as element(pc:nodl), $query as item(
         if ($ncatModel/self::pc:xmlNcat) then f:_filteredCollection_xml($enodl, $pfilter)
 (:#sql#:)        
         else if ($ncatModel/self::pc:sqlNcat) then f:_filteredCollection_sql($enodl, $pfilter)
-(:#mongo#:)        
+(:#mongo#:) 
+(: SKIPMONGO
         else if ($ncatModel/self::pc:mongoNcat) then f:_filteredCollection_mongo($enodl, $pfilter)
+:)        
 (:##:)        
         else
             let $modelElemName := local-name($ncatModel)
@@ -350,8 +362,10 @@ declare function f:filteredCollectionCount($nodl as element(pc:nodl), $query as 
         if ($ncatModel/self::pc:xmlNcat) then error()
 (:#sql#:)        
         else if ($ncatModel/self::pc:sqlNcat) then f:_filteredCollectionCount_sql($enodl, $pfilter)
-(:#mongo#:)        
+(:#mongo#:)  
+(: SKIPMONGO
         else if ($ncatModel/self::pc:mongoNcat) then f:_filteredCollectionCount_mongo($enodl, $pfilter)
+:)        
 (:##:)        
         else
             let $modelElemName := local-name($ncatModel)
