@@ -186,7 +186,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
             if (tt:doc-available($itemText)) then $itemText else     
                 m:createStandardTypeError($context, $name, $itemType, $itemText, ': no XML document at this location')
         else if ($itemType eq 'docCAT') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'docCAT') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'docCAT')
             return            
                 if (tt:doc-available($vamod)) then 
                     let $root := tt:doc($vamod)/*
@@ -220,7 +220,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
 
 (:#xq30ge#:)
         else if ($itemType eq 'textURI') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'textURI') , 'VAMOD: ')        
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'textURI')        
             return if ($vamod/self::z:errors) then $vamod else            
                 
             let $uri := replace($vamod, '\\', '/')
@@ -230,7 +230,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                     m:createStandardTypeError($context, $name, $itemType, $vamod, 
                         ': no text resource at this location')
         else if ($itemType eq 'wtextURI') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'xtextURI') , 'VAMOD: ')        
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'xtextURI')        
             return if ($vamod/self::z:errors) then $vamod else            
                 
             let $uri := replace($vamod, '\\', '/')
@@ -240,7 +240,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                     m:createStandardTypeError($context, $name, $itemType, $vamod, 
                         ': no text resource at this location')
         else if ($itemType eq 'csvURI') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'csvURI') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'csvURI')
             return if ($vamod/self::z:errors) then $vamod else            
                 
             let $uri := replace($vamod, '\\', '/')
@@ -250,7 +250,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                     m:createStandardTypeError($context, $name, $itemType, $vamod, 
                         ': no text resource at this location')
         else if ($itemType eq 'linesURI') then   
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'linesURI') , 'VAMOD: ')        
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'linesURI')        
             return if ($vamod/self::z:errors) then $vamod else            
                 
             let $uri := replace($vamod, '\\', '/')
@@ -261,7 +261,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                         ': no text resource at this location')
 (:#xq30ge file#:)                     
         else if ($itemType eq 'textDFD') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'textDFD') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'textDFD')
             return if ($vamod/self::z:errors) then $vamod else            
           
             let $rcat := tt:rcat($vamod, 'text', 'text', $vamod/@encoding, $vamod) return            
@@ -269,7 +269,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                 m:createStandardTypeError($context, $name, $itemType, $vamod, 
                     concat(': no valid directory filter descriptor; msg=', string-join($rcat//@msg, '; ')))
         else if ($itemType eq 'textFOX') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'textFOX') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'textFOX')
             return if ($vamod/self::z:errors) then $vamod else            
           
             let $rcat := tt:rcatFromFoxpath($vamod, 'text', 'text', $vamod/@encoding, $vamod) return            
@@ -277,7 +277,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                 m:createStandardTypeError($context, $name, $itemType, $vamod, 
                     concat(': no valid directory filter descriptor; msg=', string-join($rcat//@msg, '; ')))
         else if ($itemType eq 'linesDFD') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'linesDFD') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'linesDFD')
             return if ($vamod/self::z:errors) then $vamod else            
            
             let $rcat := tt:rcat($vamod, 'text', 'lines', $vamod/@encoding, $vamod) return            
@@ -285,7 +285,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                 m:createStandardTypeError($context, $name, $itemType, $vamod, 
                     concat(': no valid directory filter descriptor; msg=', string-join($rcat//@msg, '; ')))
         else if ($itemType eq 'linesFOX') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'linesFOX') , 'VAMOD: ')        
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'linesFOX')        
             return if ($vamod/self::z:errors) then $vamod else            
            
             let $rcat := tt:rcatFromFoxpath($vamod, 'text', 'lines', $vamod/@encoding, $vamod) return           
@@ -293,7 +293,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                 m:createStandardTypeError($context, $name, $itemType, $vamod, 
                     concat(': no valid directory filter descriptor; msg=', string-join($rcat//@msg, '; ')))
         else if ($itemType eq 'xtextDFD') then
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'xtextDFD') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'xtextDFD')
             return if ($vamod/self::z:errors) then $vamod else            
            
             let $rcat := tt:rcat($vamod, 'text', 'xtext', $vamod/@encoding, $vamod) return            
@@ -309,7 +309,7 @@ declare function m:_parseParamValueItem($context as element(context)?,
                     m:createStandardTypeError($context, $name, $itemType, $vamod, 
                         concat(': no valid directory filter descriptor; msg=', string-join($rcat/z:error/@msg, '; ')))
         else if ($itemType eq 'csvFOX') then     
-            let $vamod := trace( m:_getValueAndModifiers($itemText, $name, 'csvFOX') , 'VAMOD: ')
+            let $vamod := m:_getValueAndModifiers($itemText, $name, 'csvFOX')
             return if ($vamod/self::z:errors) then $vamod else
                 
             let $rcat := tt:rcatFromFoxpath($vamod, 'csv', 'xcsv', $vamod/@encoding, $vamod) return            

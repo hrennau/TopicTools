@@ -20,6 +20,18 @@ declare namespace z="http://www.ttools.org/structure";
  : ============================================================================
  :)
  
+ (:~
+  : Returns a string consisting of $number repetitions of character $char.
+  :
+  : @param char the character to be repeated
+  : @param number the number of repetitions
+  : @return string consisting of repeated characters
+  :)
+ declare function m:repeatChar($char as xs:string, $number as xs:integer)
+        as xs:string {
+    string-join(for $i in 1 to $number return $char, '')        
+};
+
 (:~
  : Splits a string into items separated by the separator $sep, which is expected 
  : to be a single character. Occurrences $sep which are preceded by a backslash 
@@ -442,6 +454,34 @@ declare function m:padRight($s as xs:string?, $width as xs:integer, $fill as xs:
 declare function m:padRight($s as xs:string?, $width as xs:integer)
         as xs:string {
     m:padRight($s, $width, ' ')        
+};
+
+(:~
+ : Pads a string by inserting preceding fill characters.
+ :
+ : @param name s the string
+ : @param width the desired string length
+ : @param fill the fill character
+ : @return the padded string
+ :)
+declare function m:padLeft($s as xs:string?, $width as xs:integer, $fill as xs:string)
+        as xs:string? {
+    let $len := string-length($s)
+    return
+        if ($len ge $width) then $s else
+            concat(string-join(for $i in 1 to $width - $len return $fill, ''), $s)
+};
+
+(:~
+ : Pads a string by inserting preceding blanks.
+ :
+ : @param name s the string
+ : @param width the desired string length
+ : @return the padded string
+ :)
+declare function m:padLeft($s as xs:string?, $width as xs:integer)
+        as xs:string {
+    m:padLeft($s, $width, ' ')        
 };
 
 (:~

@@ -102,7 +102,7 @@ declare function m:_getValueAndModifiers($itemText as xs:string,
                                          $paramName as xs:string,
                                          $paramItemType as xs:string)
         as element() {
-    let $parts := tt:splitString(trace($itemText, 'ITEM_TEXT: '), '<', true(), ';')
+    let $parts := tt:splitString($itemText, '<', true(), ';')
     let $value := $parts[1]
     let $mods := subsequence($parts, 2)
     let $modifiers :=

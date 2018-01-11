@@ -1,10 +1,15 @@
 module namespace f="http://www.ttools.org/xquery-functions";
-import module namespace i="http://www.ttools.org/xquery-functions" at "_foxpath-util.xqm";
+import module namespace i="http://www.ttools.org/xquery-functions" at 
+   "_foxpath-util.xqm",
+   "_foxpath-processorDependent.xqm";
 
 declare variable $f:FOXSTEP_SEPERATOR := '/';
 declare variable $f:NODESTEP_SEPERATOR := '\';
 declare variable $f:FOXSTEP_ESCAPE := '~';
 declare variable $f:FOXSTEP_NAME_DELIM := '`';
+declare variable $f:URI_TREES_DIRS external := 'basex://uri-trees2';
+
+(: declare variable $f:URI_TREES_DIRS := 'uri-trees'; :)
 
 (:~
  : Parses a foxpath expression, creating an expression tree.
@@ -17,6 +22,18 @@ declare variable $f:FOXSTEP_NAME_DELIM := '`';
 declare function f:parseFoxpath($text as xs:string?)
         as element()+ {
     f:parseFoxpath($text, ())
+};
+
+(:~
+ : Parses a foxpath expression, creating an expression tree.
+ : This variant of the parsing function switches optimization off.
+ :
+ : @param text the expression text
+ : @return expression tree representing the expression text
+ :)
+declare function f:parseFoxpath_noOptimization($text as xs:string?)
+        as element()+ {        
+    f:parseFoxpath($text, map{'SKIP_OPTIMIZATION': true()})
 };
 
 (:~
@@ -39,27 +56,45 @@ declare function f:parseFoxpath($text as xs:string?)
  : @return expression tree representing the expression text
  :)
 declare function f:parseFoxpath($text as xs:string?, $options as map(*)?)
-        as element()+ {
-    (: let $DEBUG := f:trace($text, 'parse.text.foxpath', 'INTEXT_FOXPATH: ') :)
+        as element()+ {        
+    let $DEBUG := f:trace($text, 'parse.text.foxpath', 'INTEXT_FOXPATH: ')
     let $context := f:getInitialParsingContext($options)
-    let $seqExprEtc := f:trace(f:parseSeqExpr($text, $context) , 'tree', 'PARSED: ')
-    let $textAfter := f:extractTextAfter($seqExprEtc)    
-    let $seqExpr := 
-        let $etree := $seqExprEtc[. instance of node()]
-        return
-            if ($etree//error or $textAfter) then
-                element {node-name($etree)} {
-                    $etree/@*,
-                    attribute error {'true'},
-                    $etree/node(),
-                    if (not($textAfter)) then ()
-                    else
-                        f:createFoxpathError('SYNTAX_ERROR', 
-                            concat('Unexpected text after expression end: ', $textAfter))                    
-                }
-            else $etree
+    let $prologEtc := f:parseProlog($text, $context)
+    let $prolog := $prologEtc[. instance of node()]
+    let $errors := f:finalizeFoxpathErrors($prolog/descendant-or-self::error)
     return
-        $seqExpr
+        if ($errors) then $errors else        
+    let $textAfter := f:extractTextAfter($prologEtc)
+    
+    let $seqExprEtc := f:trace(f:parseSeqExpr($textAfter, $context) , 'tree', 'PARSED: ')   
+    let $textAfter := f:extractTextAfter($seqExprEtc)    
+    let $seqExpr := $seqExprEtc[. instance of node()]
+    let $errors := f:finalizeFoxpathErrors($seqExpr/descendant-or-self::error)        
+    return
+        if ($errors) then $errors
+        else if ($textAfter) then
+            f:finalizeFoxpathErrors(
+                f:createFoxpathError('SYNTAX_ERROR', 
+                    concat('Unexpected text after expression end: ', $textAfter)))                    
+        else
+            let $nsDecls := $prolog/nsDecls
+            let $exprTree := 
+                let $finalized := f:finalizeParseTree($seqExpr, $prolog)
+                return
+                    if (exists($options) and map:get($options, 'SKIP_OPTIMIZATION')) then 
+                        $finalized
+                    else
+                        f:finalizeParseTree_annotateSteps($finalized) !
+                        f:finalizeParseTree_extendFoxRoots(.)
+
+            let $errors := f:finalizeFoxpathErrors($exprTree/descendant-or-self::error)            
+            return
+                if ($errors) then $errors 
+                else
+                    <foxpathTree>{
+                        $prolog,
+                        $exprTree
+                    }</foxpathTree>
 };
 
 (: 
@@ -88,10 +123,23 @@ declare function f:getInitialParsingContext($options as map(*)?)
         ($options ! map:get(., 'FOXSTEP_ESCAPE'), $f:FOXSTEP_ESCAPE)[1]
     let $foxstepNameDelim :=
         ($options ! map:get(., 'FOXSTEP_NAME_DELIM'), $f:FOXSTEP_NAME_DELIM)[1]
+    let $uriTreesDirs :=
+        ($options ! map:get(., 'URI_TREES_DIRS'), $f:URI_TREES_DIRS)[1]
         
     let $foxstepSeperatorRegex := replace($foxstepSeperator, '(\\)', '\\$1')
     let $nodestepSeperatorRegex := replace($nodestepSeperator, '(\\)', '\\$1')
     
+(:    
+    let $uriTrees :=
+        if (starts-with($uriTreesDir, 'basex://')) then
+            let $db := trace(substring($uriTreesDir, 9) , 'DB: ')
+            return db:open($db)
+        else
+            try {
+                file:list($uriTreesDir, false(), 'uri-trees-*') ! concat($uriTreesDir, '/', .) ! doc(.)/*
+            } catch * {()}
+    let $DUMMY := trace(count($uriTrees), 'COUNT_URI_TREES: ')
+:)    
     return
         map{'FOXSTEP_SEPERATOR': $foxstepSeperator,
             'FOXSTEP_SEPERATOR_REGEX': $foxstepSeperatorRegex,
@@ -99,7 +147,491 @@ declare function f:getInitialParsingContext($options as map(*)?)
             'NODESTEP_SEPERATOR_REGEX': $nodestepSeperatorRegex,
             'FOXSTEP_ESCAPE': $foxstepEscape,
             'FOXSTEP_NAME_DELIM': $foxstepNameDelim,
-            'IS_CONTEXT_URI': $isContextUri}
+            'IS_CONTEXT_URI': $isContextUri,           
+            'URI_TREES_DIRS': $uriTreesDirs
+        }
+};
+            (: 'URI_TREES': $uriTrees}:) 
+(: 
+ : ===============================================================================
+ :
+ :     f i n a l i z e    p a r s i n g    r e s u l t
+ :
+ : ===============================================================================
+ :)
+declare function f:finalizeParseTree($tree as element(), $prolog as element()?)
+        as element() {
+    (: add namespaces :)        
+    let $nsDecls := $prolog/nsDecls
+    let $tree := (: if (not($nsDecls)) then $tree else :) 
+        f:finalizeParseTree_namespaces($tree, $prolog)
+    return
+        $tree
+};
+
+declare function f:finalizeParseTree_namespaces($tree as element(), $prolog as element()?)
+        as element() {
+    f:finalizeParseTree_namespacesRC($tree, $prolog)        
+};
+
+declare function f:finalizeParseTree_namespacesRC($n as node(), $prolog as element()?)
+        as node()? {
+    typeswitch($n)
+    case document-node() return
+        document {for $c in $n/node() return f:finalizeParseTree_namespacesRC($n, $prolog)}
+    case element(step) return
+        let $namespace :=
+            if ($n/@namespace) then ()
+            else if ($n/@prefix) then
+                let $prefix := trace( $n/@prefix , 'PREFIX: ')
+                let $uri := $prolog/nsDecls/namespace[@prefix eq $prefix]/@uri
+                let $uri :=
+                    if ($uri) then $uri
+                    else $f:PREDECLARED_NAMESPACES[@prefix eq $prefix]/@uri
+                return
+                    if (not($uri)) then
+                        f:createFoxpathError('SYNTAX_ERROR',
+                            concat('Prefix not bound to a namespace URI: ', $prefix))
+                    else
+                        attribute namespace {$uri}
+            else if ($n/@localName ne '*') then
+                $prolog/nsDecls/namespace[@prefix eq '']/@uri/attribute namespace {.}
+            else ()
+        return
+            if ($namespace/self::error) then $namespace
+            else
+                element {node-name($n)} {
+                    for $a in $n/@* return 
+                        f:finalizeParseTree_namespacesRC($a, $prolog),
+                    $namespace,
+                    for $c in $n/node() return 
+                        f:finalizeParseTree_namespacesRC($c, $prolog)
+                }                        
+    case element(var) | element(param) return
+        let $namespace :=
+            if ($n/@namespace) then ()
+            else if ($n/@prefix) then
+                let $prefix := $n/@prefix
+                let $uri := $prolog/nsDecls/namespace[@prefix eq $prefix]/@uri
+                return
+                    if (not($uri)) then
+                        f:createFoxpathError('SYNTAX_ERROR',
+                            concat('Prefix not bound to a namespace URI: ', $prefix))
+                    else
+                        attribute namespace {$uri}
+            else ()
+        return
+            if ($namespace/self::error) then $namespace
+            else
+                element {node-name($n)} {
+                    for $a in $n/@* return 
+                        f:finalizeParseTree_namespacesRC($a, $prolog),
+                    $namespace,
+                    for $c in $n/node() return 
+                        f:finalizeParseTree_namespacesRC($c, $prolog)
+                }                        
+    case element() return
+        element {node-name($n)} {
+            for $a in $n/@* return f:finalizeParseTree_namespacesRC($a, $prolog),
+            for $c in $n/node() return f:finalizeParseTree_namespacesRC($c, $prolog)
+        }
+    default return
+        $n
+};
+
+declare function f:finalizeParseTree_annotateSteps($tree as element())
+        as element() {
+    f:finalizeParseTree_annotateStepsRC($tree)        
+};
+
+(:~
+ : Annotatation of steps: a foxstep with a predicate 'is-file' or 'is-dir' is annotated
+ : with a @nodeKind attribute.
+ :)
+declare function f:finalizeParseTree_annotateStepsRC($n as node())
+        as node()? {
+    typeswitch($n)
+    case document-node() return
+        document {for $c in $n/node() return 
+            f:finalizeParseTree_annotateStepsRC($n)}
+    case element(foxStep) return
+        (: if a predicate prescrites 'is-file' or 'is-dir', 
+           @kindFilter is set to 'file' or 'dir' :)
+        let $kindFilterAtt :=
+            let $fcall := $n/functionCall[@name = ('is-file', 'is-dir')]
+            let $arg := $fcall/*            
+            return
+                if (not($arg) or $arg/self::contextItem) then 
+                    attribute kindFilter {$fcall/@name/substring(., 4)}
+                else ()
+        let $wasChildAtt :=
+            if (f:finalizeParseTree_isShortcut_doubleSlashChild($n/preceding-sibling::*[1], $n)) then
+                attribute __anno {'was-child'}
+            else ()
+        let $ignoreAtt :=
+            if (f:finalizeParseTree_isShortcut_doubleSlashChild($n, $n/following-sibling::*[1])) then
+                attribute __ignore {'true'}
+            else ()
+        return
+            if (not($wasChildAtt)) then
+                element {node-name($n)} {
+                    for $a in $n/@* return f:finalizeParseTree_annotateStepsRC($a),
+                    $ignoreAtt,
+                    (: the predicate because of BaseX bug ...:)
+                    $kindFilterAtt[string()],
+                    for $c in $n/node() return f:finalizeParseTree_annotateStepsRC($c)
+                }
+            else                
+                element {node-name($n)} {
+                    attribute axis {'descendant'},
+                    $wasChildAtt,                
+                    for $a in $n/(@* except @axis) return f:finalizeParseTree_annotateStepsRC($a),
+                    (: the predicate because of BaseX bug ...:)
+                    $kindFilterAtt[string()],
+                    for $c in $n/node() return f:finalizeParseTree_annotateStepsRC($c)
+                }
+    case element(functionCall) return
+        let $ignAtt :=
+            if ($n/@name = ('is-file', 'is-dir') and $n/parent::foxStep and (not($n/*) or $n/contextItem)) then
+                attribute __ignore {'true'}
+            else ()
+        return
+            element {node-name($n)} {
+                for $a in $n/@* return f:finalizeParseTree_annotateStepsRC($a),
+                $ignAtt[string()],
+                for $c in $n/node() return f:finalizeParseTree_annotateStepsRC($c)
+            }
+        
+    case element() return
+        element {node-name($n)} {
+            for $a in $n/@* return f:finalizeParseTree_annotateStepsRC($a),
+            for $c in $n/node() return f:finalizeParseTree_annotateStepsRC($c)            
+        }
+    default return $n            
+};
+
+(:~
+ : Returns true if the two foxsteps stem from //foo and foo has no predicate referring 
+ :    to it position.
+ :)
+declare function f:finalizeParseTree_isShortcut_doubleSlashChild($foxStep1 as element()?, $foxStep2 as element()?)
+        as xs:boolean {
+    $foxStep1/self::foxStep[@axis eq 'descendant-or-self'][@name eq '*'][not(*)]
+       and 
+    $foxStep2/self::foxStep/@axis eq 'child'
+       and (
+    not($foxStep2/*) or 
+       count($foxStep2/*) eq 1 and $foxStep2/functionCall[@name = ('is-file', 'is-dir')]
+    )
+} ;       
+
+(:~
+ : Finalizes parse tree - replaces child steps by an extension of the path root.
+ :)
+declare function f:finalizeParseTree_extendFoxRoots($tree as element())
+        as element() {
+    (: if (not($tree//foxRoot[starts-with(@path, 'svn-')])) then $tree else :)
+
+    copy $treec := $tree
+    modify
+        let $roots := $treec//foxRoot
+        (: let $roots_svn := $roots[starts-with(@path, 'svn-')] :)       
+        for $root in $roots
+        let $childSteps :=
+            let $after := 
+                $root/following-sibling::*[not(self::foxStep) 
+                                           or not(@axis eq 'child') 
+                                           or matches(@name, '[*?]')
+                                           or *][1]
+            return
+                $root/following-sibling::*[not($after) or . << $after]
+        return 
+            if (not($childSteps)) then ()
+            else
+                let $newPath := 
+                    string-join((replace($root/@path, '/$', ''), $childSteps/@name), '/')
+                return (
+                    replace value of node $root/@path with $newPath,
+                    delete nodes $childSteps
+                )                
+    return $treec
+};
+
+
+(: 
+ : ===============================================================================
+ :
+ :     p a r s e    p r o l o g
+ :
+ : ===============================================================================
+ :)
+(:~
+ : Parses the prolog of a foxpath expression.
+ :
+ : Syntax:
+ :     Prolog ::= VarDecl*
+ :     VarDecl ::= "declare" "variable" "$" VarName TypeDeclaration? 
+ :                           ((":=" VarValue) | ("external" (":=" VarDefaultValue)?))
+ :                           ";" 
+ :
+ : @param text a text consisting of the expression text, possibly
+ :    followed by further text
+ : @return expression tree representing the expression text,
+ :    followed by the remaining unparsed text as a string, if any
+ :)
+declare function f:parseProlog($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.prolog', 'INTEXT_PROLOG: ')
+    
+    (: parse namespace declarations :)
+    let $nsDeclsEtc := f:parseNsDecls($text, $context)
+    let $nsDecls := $nsDeclsEtc[. instance of node()]
+    (: let $nsDecls := f:completeNsDecls($nsDecls) :)
+    let $errors := $nsDecls/self::error
+    return
+        if ($errors) then $errors else        
+    let $textAfterNsDecls := f:extractTextAfter($nsDeclsEtc)
+    
+    (: parse variable declarations :)
+    let $varDeclsEtc := f:parseVarDecls($textAfterNsDecls, $context)
+    let $varDecls := $varDeclsEtc[. instance of node()]
+    let $errors := $varDecls/self::error
+    return
+        if ($errors) then $errors else
+    let $textAfterVarDecls := f:extractTextAfter($varDeclsEtc)
+    
+    return (
+        if (not($nsDecls) and not($varDecls)) then ()
+        else 
+            <prolog>{
+                if (not($nsDecls)) then () else
+                    <nsDecls>{$nsDecls}</nsDecls>,
+                if (not($varDecls)) then () else
+                    <varDecls>{$varDecls}</varDecls>
+            }</prolog>,
+        $textAfterVarDecls
+    )        
+};
+
+(:~
+ : Extends the parsed namespace bindings by built-in namespace bindings.
+ :)
+(:
+declare function f:completeNsDecls($nsDecls as element(namespace)*)
+        as element(namespace)* {
+    $nsDecls,        
+    (: add namespace: rdfs :)
+    if ($nsDecls/@prefix = 'rdfs') then () else
+        <namespace prefix="rdfs" uri="http://www.w3.org/2000/01/rdf-schema#"/>,
+    (: add namespace: rdf :)        
+    if ($nsDecls/@prefix = 'rdf') then () else
+        <namespace prefix="rdf" uri="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>,
+    (: add namespace: owl :)
+    if ($nsDecls/@prefix = 'owl') then () else
+        <namespace prefix="owl" uri="http://www.w3.org/2002/07/owl#"/>
+};
+:)
+
+(:~
+ : Parses the namespace declarations.
+ :)
+declare function f:parseNsDecls($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.ns_decls', 'INTEXT_NS_DECLS: ')
+    let $nsDeclEtc := f:parseNsDecl($text, $context)
+    let $nsDecl := $nsDeclEtc[. instance of node()]
+    let $textAfterNsDecl := f:extractTextAfter($nsDeclEtc)
+    return (
+        $nsDecl,
+        if (matches($textAfterNsDecl, 
+            '^(declare\s+default\s+element\s+namespace |
+               declare\s+namespace\s+)', 'sx')) then
+            f:parseNsDecls($textAfterNsDecl, $context)
+        else
+            $textAfterNsDecl
+    )            
+};
+
+(:~
+ : Parses a single namespace declaration.
+ :)
+declare function f:parseNsDecl($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.ns_decl', 'INTEXT_NS_DECL: ') return
+    
+    (: default namespace declaration :)
+    if (matches($text, '^declare\s+default\s+element\s+namespace\s+')) then
+        let $textNamespaceEtc :=
+            replace($text, '^declare\s+default\s+element\s+namespace\s+(.+)', '$1', 'sx')
+                [not(. eq $text)]
+        return
+            let $namespaceEtc := f:parseStringLiteral($textNamespaceEtc, $context)
+            let $namespace := $namespaceEtc[. instance of node()]
+            let $textAfterNamespace := f:extractTextAfter($namespaceEtc)
+            return
+                if (not($namespace)) then
+                    f:createFoxpathError('SYNTAX_ERROR',
+                        concat('Invalid default namespace declaration - ',
+                            'URIliteral expected; text: ', $text))
+                else if (not(starts-with($textAfterNamespace, ';'))) then                        
+                    f:createFoxpathError('SYNTAX_ERROR',
+                        concat('Syntax error - default namespace declaration must be followed ',
+                            'by semicolon; text: ', $text))
+                else
+                    let $textAfterNsDecl := f:skipOperator($textAfterNamespace, ';')
+                    return (
+                        <namespace prefix="" uri="{$namespace}"/>,
+                        $textAfterNsDecl                        
+                    )
+    (: namespace declaration :)                        
+    else 
+        let $prefixAndNamespaceText :=
+            replace($text,
+                '^declare\s+namespace\s+(\i[\c-[:]]*)\s*=\s*(.*)', '$1 $2', 'sx')[. ne $text]
+        return
+            if (not($prefixAndNamespaceText)) then $text
+            else
+                let $prefix := substring-before($prefixAndNamespaceText, ' ')
+                let $textNamespaceEtc := substring-after($prefixAndNamespaceText, ' ')
+                let $namespaceEtc := f:parseStringLiteral($textNamespaceEtc, $context)
+                let $namespace := $namespaceEtc[. instance of node()]
+                let $textAfterNamespace := f:extractTextAfter($namespaceEtc)
+                return
+                    if (not($namespace)) then
+                        f:createFoxpathError('SYNTAX_ERROR',
+                            concat('Invalid namespace declaration - pattern ',
+                                'prefix = URIliteral expected; text: ', $text))                        
+                    else if (not(starts-with($textAfterNamespace, ';'))) then                        
+                        f:createFoxpathError('SYNTAX_ERROR',
+                            concat('Syntax error - default namespace declaration must be followed ',
+                                'by semicolon; text: ', $text))
+                    else 
+                        let $textAfterNsDecl := f:skipOperator($textAfterNamespace, ';')
+                        return (
+                            <namespace prefix="{$prefix}" uri="{$namespace}"/>,
+                            $textAfterNsDecl
+                        )                            
+};
+
+(:~
+ : Parses the variable declarations.
+ :)
+declare function f:parseVarDecls($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.var_decls', 'INTEXT_VAR_DECLS: ')
+    let $varDeclEtc := f:parseVarDecl($text, $context)
+    let $varDecl := $varDeclEtc[. instance of node()]
+    let $textAfterVarDecl := f:extractTextAfter($varDeclEtc)
+    return (
+        $varDecl,
+        if (matches($textAfterVarDecl, '^declare\s+variable\s+\$', 's')) then
+            f:parseVarDecls($textAfterVarDecl, $context)
+        else
+            $textAfterVarDecl
+    )            
+};
+
+(:~
+ : Parses a single variable declaration.
+ :)
+declare function f:parseVarDecl($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.var_decl', 'INTEXT_VAR_DECL: ')
+    
+    let $eqnameEtcText := 
+        replace($text, '^declare\s+variable\s+(\$.+)$', '$1', 's')[. ne $text] 
+    return
+        if (not($eqnameEtcText)) then $text else
+       
+    let $eqnameEtc := f:parseVarName($eqnameEtcText, $context)
+    let $eqname := $eqnameEtc[. instance of node()]
+    let $textAfterEqname := f:extractTextAfter($eqnameEtc)
+    
+    (: normalization - if no sequence type specified, add 'item()*' :)
+    let $useTextAfterEqname :=
+        if (matches($textAfterEqname, '^as\s', 's')) then $textAfterEqname
+        else concat('as item()* ', $textAfterEqname)
+    let $seqTypeEtc := f:parseParamSequenceType($useTextAfterEqname, $context)
+    let $seqType := $seqTypeEtc[. instance of node()]
+    let $textAfterSeqType := f:extractTextAfter($seqTypeEtc)
+    return    
+        (: not external :)
+        if (starts-with($textAfterSeqType, ':=')) then
+            let $textAfterOperator := f:skipOperator($textAfterSeqType, ':=')
+            let $valueEtc := f:parseSeqExpr($textAfterOperator, $context)
+            let $value := $valueEtc[. instance of node()]
+            let $textAfterValue := f:extractTextAfter($valueEtc)
+            return
+                if (not($value)) then 
+                    f:createFoxpathError('SYNTAX_ERROR',
+                        concat('Syntax error - variable declaration contains ',
+                            'invalid value expression; var name: ', $eqname/@localName))                
+                else if (not(starts-with($textAfterValue, ';'))) then
+                    f:createFoxpathError('SYNTAX_ERROR',
+                        concat('Syntax error - variable declaration must be followed ',
+                            'by semicolon; var name: ', $eqname/@localName))
+                else
+                    let $textAfterVarDecl := f:skipOperator($textAfterValue, ';')
+                    return (
+                        <varDecl external="false">{
+                            $eqname/(@* except @text),
+                            $seqType,
+                            $value
+                        }</varDecl>,
+                        $textAfterVarDecl
+                    )
+                        
+        (: external :)                        
+        else if (starts-with($textAfterSeqType, 'external')) then
+            let $textAfterExternal := f:skipOperator($textAfterSeqType, 'external')
+            return
+                (: with default value :)            
+                if (starts-with($textAfterExternal, ':=')) then
+                    let $textAfterOperator := f:skipOperator($textAfterExternal, ':=')
+                    let $valueEtc := f:parseSeqExpr($textAfterOperator, $context)
+                    let $value := $valueEtc[. instance of node()]
+                    let $textAfterValue := f:extractTextAfter($valueEtc)
+                    return
+                        if (not($value)) then
+                            f:createFoxpathError('SYNTAX_ERROR',
+                                concat('Syntax error - external variable declaration ',
+                                    'contains invalid default value expression; ',
+                                    'var name: ', $eqname/@localName))               
+                        else if (not(starts-with($textAfterValue, ';'))) then
+                            f:createFoxpathError('SYNTAX_ERROR',                        
+                                concat('Syntax error - external variable declaration must ',
+                                    'be followed by semicolon; var name: ', $eqname/@localName))               
+                        else
+                            let $textAfterVarDecl := f:skipOperator($textAfterValue, ';')
+                            return (
+                                <varDecl external="true">{
+                                    $eqname/(@* except @text),
+                                    $seqType,
+                                    $value
+                                }</varDecl>,
+                                $textAfterVarDecl
+                            )
+                                
+                else if (not(starts-with($textAfterExternal, ';'))) then
+                    f:createFoxpathError('SYNTAX_ERROR',                
+                        concat('Syntax error - external variable declaration must be followed ',
+                            'by semicolon; var name: ', $eqname/@localName))
+                (: without default value :)                        
+                else
+                    let $textAfterVarDecl := f:skipOperator($textAfterExternal, ';')
+                    return (
+                        <varDecl external="true">{
+                            $eqname/(@* except @text),
+                            $seqType
+                        }</varDecl>,
+                        $textAfterVarDecl
+                    )
+        else
+            f:createFoxpathError('SYNTAX_ERROR',                
+                concat('Syntax error - in a variable declaration, name and optional ',
+                    'sequence type must be followed either by ":=" or by "external"; ',
+                    'var name: ', $eqname/@localName))
+        
 };
 
 (: 
@@ -214,9 +746,18 @@ declare function f:parseExprSingle($text as xs:string, $context as map(*))
  : ===============================================================================
  :)
 
+(:~
+ : Parses a simple FLWOR expression consisting of for and/or let clauses and
+ : a return clause. Note that whereas XPath allows only a single for or let
+ : clause, foxpath allows multiple for and/or let clauses, as XQuery does.
+ :
+ : @param text the text to be parsed
+ : @param context the parsing context
+ : @return the parsed FLWOR expression followed by the remaining unparsed text
+ :)
 declare function f:parseForLetExpr($text as xs:string, $context as map(*))
         as item()* {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_FOR_LET_EXPR: ') return
+    let $DEBUG := f:trace($text, 'parse.for_let_expr', 'INTEXT_FOR_LET_EXPR: ') return
     if (not(matches($text, '^(for|let)\s+\$'))) then () else
     
     let $clauseKind := replace($text, '^(for|let).*', '$1', 's')
@@ -256,33 +797,40 @@ declare function f:parseForLetExpr($text as xs:string, $context as map(*))
  :
  : @param text a text consisting of the variable bindings, followed by further text
  : @param clauseKind either "for" or "let"
- : @return expression tree representing the var in clauses,
+ : @return expression tree representing the variable binding clauses,
  :    followed by the remaining unparsed text
  :)
 declare function f:parseVarBindings($text as xs:string, $clauseKind as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_VAR_BINDINGS: ') return
+    let $DEBUG := f:trace($text, 'parse.var_bindings', 'INTEXT_VAR_BINDINGS: ') return
     let $op := if ($clauseKind eq 'for') then 'in' else ':='
     
     let $varNameEtc := f:parseVarName($text, $context)
     let $varName := $varNameEtc[. instance of node()]
-    let $textAfter := f:extractTextAfter($varNameEtc)    
-    let $exprEtcText := f:skipOperator($textAfter, $op)
+    let $textAfterVarName := f:extractTextAfter($varNameEtc)    
+    let $exprEtcText := f:skipOperator($textAfterVarName, $op)
     let $exprEtc := f:parseExprSingle($exprEtcText, $context)    
     let $expr := $exprEtc[. instance of node()]
-    let $textAfterClause := f:extractTextAfter($exprEtc)
+    let $textAfterExpr := f:extractTextAfter($exprEtc)
     let $clause :=
         element {$clauseKind}{
-            <var>{$varName/(@localName, @namespace)}</var>,
+            <var>{$varName/(@localName, @prefix, @namespace)}</var>,
             $expr
         }
     return (
         $clause,
-        if (not(starts-with($textAfterClause, ','))) then $textAfterClause
-        else
-            let $textRemainingClauses := f:skipOperator($textAfterClause, ',')
+        if (starts-with($textAfterExpr, ',')) then
+            let $textRemainingClauses := f:skipOperator($textAfterExpr, ',')
             return
                 f:parseVarBindings($textRemainingClauses, $clauseKind, $context)
+
+        else if (matches($textAfterExpr, '^(for|let)\s+\$')) then    
+            let $clauseKind := replace($textAfterExpr, '^(for|let).*', '$1', 's')    
+            let $textVarBindingsEtc := replace($textAfterExpr, concat('^', $clauseKind, '\s+'), '')
+            return
+                f:parseVarBindings($textVarBindingsEtc, $clauseKind, $context)
+        else 
+            $textAfterExpr
     )
 };
 
@@ -498,15 +1046,20 @@ declare function f:parseAndExprRC($text as xs:string, $context as map(*))
 declare function f:parseComparisonExpr($text as xs:string, $context as map(*))
         as item()+ {
     let $nodeComp := "(is|<<|>>)"        
+    let $nodeCompMatch := "(is\s|<<|>>)"
+    
     (: let $generalComp := "(=|!=|<=|<|>=|>|~~~|~~|~)" :)
     let $generalComp := "(=|!=|<=|<|>=|>)"
+    let $generalCompMatch := "(=|!=|<=|<|>=|>)"
+    
     let $valueComp := "(eq|ne|lt|le|gt|ge)"
+    let $valueCompMatch := "(eq|ne|lt|le|gt|ge)\s"
     
     let $leftExprEtc := f:parseStringConcatExpr($text, $context)
     let $leftExpr := $leftExprEtc[. instance of node()]
     let $textAfter := f:extractTextAfter($leftExprEtc)    
     return 
-        if (matches($textAfter, concat('^', $nodeComp))) then            
+        if (matches($textAfter, concat('^', $nodeCompMatch))) then            
             let $op := replace($textAfter, concat('^(', $nodeComp, ').*'), '$1', 's')
             let $textAfterOp := f:skipOperator($textAfter, $op)
             let $rightExprEtc := f:parseStringConcatExpr($textAfterOp, $context)
@@ -519,7 +1072,8 @@ declare function f:parseComparisonExpr($text as xs:string, $context as map(*))
                 }</cmpN>,
                 $textAfter2
             )
-        else if (matches($textAfter, concat('^', $valueComp))) then
+        (: note the whitespace required behind the operator :)
+        else if (matches($textAfter, concat('^', $valueCompMatch))) then
             let $op := replace($textAfter, concat('^(', $valueComp, ').*'), '$1', 's')
             let $textAfterOp := f:skipOperator($textAfter, $op)
             let $rightExprEtc := f:parseStringConcatExpr($textAfterOp, $context)
@@ -532,7 +1086,7 @@ declare function f:parseComparisonExpr($text as xs:string, $context as map(*))
                 }</cmpV>,
                 $textAfter2
             )
-        else if (matches($textAfter, concat('^', $generalComp))) then            
+        else if (matches($textAfter, concat('^', $generalCompMatch))) then            
             let $op := replace($textAfter, concat('^(', $generalComp, ').*'), '$1', 's')
             let $textAfterOp := f:skipOperator($textAfter, $op)
             let $rightExprEtc := f:parseStringConcatExpr($textAfterOp, $context)
@@ -765,7 +1319,7 @@ declare function f:parseMultiplicativeExprRC($text as xs:string, $leftOperand as
  :)
 declare function f:parseUnionExpr($text as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_UNION: ')        
+    let $DEBUG := f:trace($text, 'parse.union', 'INTEXT_UNION: ')        
     let $unionOperandsEtc := f:parseUnionExprRC($text, $context)
     let $unionOperands := $unionOperandsEtc[. instance of node()]
     let $textAfter := f:extractTextAfter($unionOperandsEtc)    
@@ -785,7 +1339,7 @@ declare function f:parseUnionExpr($text as xs:string, $context as map(*))
  :)
 declare function f:parseUnionExprRC($text as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_UNION_RC: ')        
+    let $DEBUG := f:trace($text, 'parse.union_rc', 'INTEXT_UNION_RC: ')        
     let $intersectExceptExprEtc := f:parseIntersectExceptExpr($text, $context)
     let $intersectExceptExpr := $intersectExceptExprEtc[. instance of node()]
     let $textAfter := f:extractTextAfter($intersectExceptExprEtc)    
@@ -857,10 +1411,155 @@ declare function f:parseIntersectExceptExprRC($text as xs:string, $leftOperand a
 };
 
 (:~
+ : Parses an arrow expression.
+ :
+ : Syntax:
+ :     ArrowExpr ::= UnaryExpr ( "=>" ArrowFunctionSpecifier ArgumentList )*
+ :     ArrowFunctionSpecifier ::= EQName | VarRef | ParenthesizedExpr
+ :
+ : @param text the text to be parsed
+ : @return a structured representation of the arrow expression,
+ :    followed by the remaining unparsed text
+ :) 
+declare function f:parseArrowExpr($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.arrow', 'INTEXT_ARROW: ')
+    let $unaryExprEtc := f:parseUnaryExpr($text, $context)
+    let $unaryExpr := $unaryExprEtc[. instance of node()]
+    let $textAfterUnary := f:extractTextAfter($unaryExprEtc)   
+    return
+        if (not(starts-with($textAfterUnary, '=>'))) then
+            ($unaryExpr, $textAfterUnary)
+        else            
+            let $clausesEtc := f:parseArrowExprClauses($textAfterUnary, $context)
+            let $clauses := $clausesEtc[. instance of node()]
+            let $textAfterClauses := f:extractTextAfter($clausesEtc)
+            let $exprTree := f:foldArrowExpr($unaryExpr, $clauses)
+            return (
+                $exprTree,
+                $textAfterClauses
+            )
+};
+
+(:~
+ : Folds an arrow expr into a function call with the first argument being provided
+ : by the left-hand side expression. The expression providing the function call is
+ : the first child of the clause, and further arguments are the children of the
+ : `argumentList` child of the clause.
+ : 
+ : Example:
+ :)
+declare function f:foldArrowExpr($lhsExpr as element(), $clauses as element()*)
+        as element() {      
+    let $head := head($clauses)
+    let $tail := tail($clauses)
+    let $headFolded :=
+        if ($head/@kind eq 'EQName') then
+            <functionCall name="{$head/name/@localName}">{
+                $head/(@localName, @prefix, @uri),
+                $lhsExpr,
+                $head/argumentList/*
+            }</functionCall>
+        else
+            <dynFuncCall>{
+                $head/*[1],
+                $lhsExpr,
+                $head/argumentList/*
+            }</dynFuncCall>
+     return
+        if ($tail) then f:foldArrowExpr($headFolded, $tail)
+        else $headFolded            
+};        
+
+(:~
+ : Parses the righthand-side clauses of an arrow expression.
+ :
+ : Syntax:
+ :     ArrowClauses ::= ( "=>" ArrowFunctionSpecifier ArgumentList )*
+ :     ArrowFunctionSpecifier ::= EQName | VarRef | ParenthesizedExpr
+ :
+ : @param text the text to be parsed
+ : @return a structured representation of the arrow expression,
+ :    followed by the remaining unparsed text
+ :) 
+declare function f:parseArrowExprClauses($text as xs:string, $context as map(*))
+        as item()+ {
+    let $DEBUG := f:trace($text, 'parse.arrow_clauses', 'INTEXT_ARROW_CLAUSES: ')
+    return if (not(starts-with($text, '=>'))) then $text else
+        
+    let $textAfterArrow := f:skipOperator($text, '=>')
+    let $clauseEtc :=
+        let $nameEtc := f:parseEQName($textAfterArrow, $context)
+        let $name := $nameEtc[. instance of node()]
+        return
+            if (not($name)) then () else
+                let $textAfterName := f:extractTextAfter($nameEtc)
+                return
+                    if (not(starts-with($textAfterName, '('))) then () else
+                        let $argumentListEtc := f:parseArgumentList($textAfterName, $context)
+                        let $argumentList := $argumentListEtc[. instance of node()]
+                        let $textAfterArgumentList := f:extractTextAfter($argumentListEtc)
+                        return (
+                            <arrayClause kind="EQName">{
+                                $name,                                
+                                <argumentList>{$argumentList}</argumentList>
+                            }</arrayClause>,
+                            $textAfterArgumentList
+                        )
+    let $clauseEtc := if ($clauseEtc) then $clauseEtc else  
+        let $varRefEtc := f:parseVariableRef($textAfterArrow, $context)        
+        let $varRef := $varRefEtc[. instance of node()]
+        return
+            if (not($varRef)) then () else
+                let $textAfterVarRef := f:extractTextAfter($varRefEtc)
+                return
+                    if (not(starts-with($textAfterVarRef, '('))) then () else
+                        let $argumentListEtc := f:parseArgumentList($textAfterVarRef, $context)
+                        let $argumentList := $argumentListEtc[. instance of node()]
+                        let $textAfterArgumentList := f:extractTextAfter($argumentListEtc)
+                        return ( 
+                            <arrayClause kind="varRef">{
+                                $varRef,                                
+                                <argumentList>{$argumentList}</argumentList>
+                            }</arrayClause>,
+                            $textAfterArgumentList
+                            )
+    let $clauseEtc := if ($clauseEtc) then $clauseEtc else
+        let $parenthEtc := f:parseParenthesizedExpr($textAfterArrow, $context)        
+        let $parenth := $parenthEtc[. instance of node()]
+        return
+            if (not($parenth)) then () else
+                let $textAfterParenth := f:extractTextAfter($parenthEtc)
+                return
+                    if (not(starts-with($textAfterParenth, '('))) then () else
+                        let $argumentListEtc := f:parseArgumentList($textAfterParenth, $context)
+                        let $argumentList := $argumentListEtc[. instance of node()]
+                        let $textAfterArgumentList := f:extractTextAfter($argumentListEtc)
+                        return ( 
+                            <arrayClause kind="parenthesizedExpr">{
+                                $parenth,                                
+                                <argumentList>{$argumentList}</argumentList>
+                            }</arrayClause>,
+                            $textAfterArgumentList
+                        )
+    let $clause := $clauseEtc[. instance of node()]
+    let $textAfterClause := f:extractTextAfter($clauseEtc)    
+    return
+        if (not($clause)) then $text
+        else (
+            $clause[. instance of node()],
+            if (starts-with($textAfterClause, '=>')) then
+                f:parseArrowExprClauses($textAfterClause, $context)
+            else
+               $textAfterClause
+        )                    
+};
+
+(:~
  : Parses a unary expression.
  :
  : Syntax:
- :     Unary ::= ("-" | "+") * PathExpr
+ :     Unary ::= ("-" | "+")* PathExpr
  :
  : @param text the text to be parsed
  : @return a structured representation of the unary expression,
@@ -868,7 +1567,7 @@ declare function f:parseIntersectExceptExprRC($text as xs:string, $leftOperand a
  :) 
 declare function f:parseUnaryExpr($text as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_UNARY: ')    
+    let $DEBUG := f:trace($text, 'parse.unary', 'INTEXT_UNARY: ')    
     let $signChars := replace($text, '^([\-+\s]+).*', '$1', 's')[. ne $text]
     return
         if (not($signChars)) then f:parseMapExpr($text, $context)
@@ -879,10 +1578,10 @@ declare function f:parseUnaryExpr($text as xs:string, $context as map(*))
             let $textMapExprEtc := substring($text, 1 + string-length($signChars))
             let $mapExprEtc := f:parseMapExpr($textMapExprEtc, $context)
             let $mapExpr := $mapExprEtc[. instance of node()]
-            let $textAfter := f:extractTextAfter($mapExprEtc)
+            let $textAfterMap := f:extractTextAfter($mapExprEtc)
             return (
                 <unary op="{$sign}">{$mapExpr}</unary>,
-                $textAfter
+                $textAfterMap
             )
 };
 
@@ -975,87 +1674,132 @@ declare function f:parseMapExprRC($text as xs:string, $context as map(*))
  :)     
 declare function f:parsePathExpr($text as xs:string, $context as map(*))
         as item()* {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_PATH: ')   
+    let $DEBUG := f:trace($text, 'parse.path', 'INTEXT_PATH: ')   
     let $FOXSTEP_SEPERATOR_REGEX := map:get($context, 'FOXSTEP_SEPERATOR_REGEX')
     let $NODESTEP_SEPERATOR_REGEX := map:get($context, 'NODESTEP_SEPERATOR_REGEX')    
     let $FOXSTEP_SEPERATOR := map:get($context, 'FOXSTEP_SEPERATOR')
     let $NODESTEP_SEPERATOR := map:get($context, 'NODESTEP_SEPERATOR')
     
+    (: parse initial root step (/ or \) 
+       ================================ :) 
     let $root :=
-        if (matches($text, concat('^[a-zA-Z]:', $FOXSTEP_SEPERATOR_REGEX))) then 
+        if (starts-with($text, 'http://')) then 
+            <foxRoot path="http://"/>        
+        else if (starts-with($text, 'https://')) then 
+            <foxRoot path="https://"/>        
+        else if (matches($text, '^rdf-file://.:/')) then 
+            <foxRoot path="{replace($text, '^(rdf-file://.:/).*', '$1')}"/>        
+        else if (starts-with($text, 'basex:/')) then
+            let $rootUri := replace($text, '^(basex:/+).*', '$1')
+(:            
+            let $db := replace($text, '^(basex://.*?/).*', '$1')
+            let $db := replace($db, '[^/]$', '$0/')
+:)            
+            return
+                <foxRoot path="basex://"/>        
+        else if (matches($text, 'svn-(file|https?):/+')) then
+            (: let $DUMMY := trace((), concat('GOING TO FIND REPO ROOT; TEXT: ', $text)) :)
+(:            
+            let $repoPath := trace(f:getSvnRootUri(substring($text, 5)) , 'REPO_PATH: ')
+:)
+            let $repoPath := replace($text, 'svn-(.*?:/+[^/]*).*', '$1')
+            return
+                if (not($repoPath)) then error(QName((), 'INVALID_SVN_PATH'), concat('Path does not address SVN repo: ', $text))
+                else <foxRoot path="{concat('svn-', $repoPath, '/')}"/>        
+        else if (matches($text, concat('^[a-zA-Z]:', $FOXSTEP_SEPERATOR_REGEX))) then 
             let $path := replace(substring($text, 1, 3), '\\', '/')
             return <foxRoot path="{$path}"/>
         else if (starts-with($text, $FOXSTEP_SEPERATOR)) then <foxRoot path="/"/>
         else if (starts-with($text, $NODESTEP_SEPERATOR)) then <root/>
         else ()
 
-    (: startHerePrefix = ./ or .\ :)
-    let $startHerePrefix :=
-        replace($text, 
-            concat('^(\.\s*(', $FOXSTEP_SEPERATOR_REGEX, '|', $NODESTEP_SEPERATOR_REGEX, ')).*'), 
-            '$1', 'sx')[not(. eq $text)]
-
-    let $textSteps :=
-        replace(
-            let $rootPath := $root/self::foxRoot/@path
-            return
-                if ($rootPath) then substring($text, 1 + string-length($rootPath))
-            else if ($root/self::root) then substring($text, 2)
-            else if ($startHerePrefix) then substring($text, 1 + string-length($startHerePrefix))
-            else $text
-        , '^\s+', '')
+    (: parse steps etc
+       =============== :) 
+    let $stepsEtc :=
     
-    (: 
-       update IS_CONTEXT_URI entry of the context:
-         if the initial operator is \, the context is an URI; 
-         if the initial operator is /, the context is not an URI;
-         otherwise (first step is relative), the context is an URI if the 
-           context of the parent expression is an URI;       
-       if the context is an URI, the first step cannot be a node axis step, and the shortcut 
-         syntax for foxstep names is accepted;
-       if the context is not an URI, the first step may be a node axis step or a fox axis step; 
-         if it is a fox axis step, it must not use abbreviated syntax, as this cannot be 
-         disambiguated from a node axis step - consider the path /foo - is foo a
-         node axis step or a foxpath step? Disambiguation requires non-abbreviated syntax:
-         /`foo`
-    :)
-    let $isContextUri :=
-        if ($root/self::foxRoot) then true()
-        else if ($root/self::root) then false()
-        else if ($startHerePrefix) then 
-            $FOXSTEP_SEPERATOR eq substring($startHerePrefix, string-length($startHerePrefix))
-        else f:trace( map:get($context, 'IS_CONTEXT_URI') , 'parse.foxstep', 
-            concat('PATH=', $text, ' IMPORTED_IS_CONTEXT_URI: '))
-    let $newContext :=
-        if ($isContextUri eq map:get($context, 'IS_CONTEXT_URI')) then $context
-        else map:put($context, 'IS_CONTEXT_URI', $isContextUri)
+        (: startHerePrefix = ./ or .\ :)
+        let $startHerePrefix :=
+            replace($text, 
+                concat('^(\.\s*(', $FOXSTEP_SEPERATOR_REGEX, '|', $NODESTEP_SEPERATOR_REGEX, ')).*'), 
+                '$1', 'sx')[not(. eq $text)]
+
+        let $textSteps :=
+            replace(
+                let $rootPath := $root/self::foxRoot/@path
+                return
+                    if ($rootPath eq 'basex://') then replace($text, '^basex:/+(.*)', '$1')
+                    else if ($rootPath) then substring($text, 1 + string-length($rootPath))
+                else if ($root/self::root) then substring($text, 2)
+                else if ($startHerePrefix) then substring($text, 1 + string-length($startHerePrefix))
+                else $text
+            , '^\s+', '')[string()]
+    
+        (: 
+           update context component IS_CONTEXT_URI:
+             if the initial operator is \: true 
+             if the initial operator is /: false
+             otherwise: IS_CONTEXT_URI from context of the parent expression
+               
+           if true: the first step cannot be a node axis step, and the shortcut 
+             syntax for foxstep names is accepted;
+           if false: the first step may be a node axis step or a fox axis step; 
+             if the first step is a fox axis step without explicit fox axis, 
+             it must not use abbreviated syntax, as this cannot be disambiguated 
+             from a node axis step; consider the path foo - if IS_CONTEXT_URI is 
+             false, it would be interpreted as a node axis step, not a fox axis step.
+        :)
+        let $isContextUri :=
+            if ($root/self::foxRoot) then true()
+            else if ($root/self::root) then false()
+            else if ($startHerePrefix) then 
+                $FOXSTEP_SEPERATOR eq substring($startHerePrefix, string-length($startHerePrefix))
+            else map:get($context, 'IS_CONTEXT_URI')
+                
+        (: update context component 'IS_CONTEXT_URI' :)        
+        let $newContext :=
+            if ($isContextUri eq map:get($context, 'IS_CONTEXT_URI')) then $context
+            else map:put($context, 'IS_CONTEXT_URI', $isContextUri)
      
-    let $precedingOperator := 
-        if ($root/self::foxRoot) then $FOXSTEP_SEPERATOR
-        else if ($root/self::root) then $NODESTEP_SEPERATOR
-        else ()    
-    let $stepsEtc := f:parseSteps($textSteps, $precedingOperator, $newContext)
+        let $precedingOperator := 
+            if ($root/self::foxRoot) then $FOXSTEP_SEPERATOR
+            else if ($root/self::root) then $NODESTEP_SEPERATOR
+            else ()
+            
+        return
+            f:parseSteps($textSteps, $precedingOperator, $newContext)
+    
     let $steps := $stepsEtc[. instance of node()]
     let $textAfter := f:extractTextAfter($stepsEtc)
-    let $exprText :=
-        let $raw :=
-            if (not($textAfter)) then $text
-            else replace(substring($text, 1, string-length($text) - string-length($textAfter)), '^\s+', '')
-        let $raw := replace($raw, '&#xA;', ' ')
-        let $raw := replace($raw, 
-                            concat($NODESTEP_SEPERATOR_REGEX, 'descendant-or-self::node()', $NODESTEP_SEPERATOR_REGEX),
-                            $NODESTEP_SEPERATOR_REGEX)
-        return $raw
+    
+    (: parse tree
+       ========== :)    
     let $parsed :=
-        if ($root or count($steps) > 1 or $steps[1]/self::foxStep/@axis or $steps[1]/self::step/@axis) then
-            <foxpath>{
-                if ($root) then () else 
-                    let $curDir := replace(replace(file:current-dir(), '\\', '/'), '/$', '')                    
-                    return attribute context {$curDir},
-                attribute text {$exprText},
-                $root,
-                $steps
-            }</foxpath>
+        if ($root or count($steps) > 1 or 
+            $steps[1]/self::foxStep/@axis or 
+            $steps[1]/self::step/@axis) 
+        then
+            let $exprText :=
+                let $raw :=
+                    if (not($textAfter)) then $text
+                    else
+                        let $exprTextLen := string-length($text) - string-length($textAfter)
+                        return substring($text, 1, $exprTextLen)
+                let $raw := replace($raw, '^\s+', '')
+                let $raw := replace($raw, '&#xA;', ' ')
+                return
+                    replace($raw, 
+                            concat($NODESTEP_SEPERATOR_REGEX, 'descendant-or-self::node()', 
+                                   $NODESTEP_SEPERATOR_REGEX),
+                            concat($NODESTEP_SEPERATOR, $NODESTEP_SEPERATOR))                            
+                            (: $NODESTEP_SEPERATOR_REGEX) :)
+                            (: changed: 20160813, hjr :)
+            return
+                <foxpath>{
+                    attribute context {i:currentDirectory()}[not($root)],
+                    attribute text {$exprText},
+                    $root,
+                    $steps
+                }</foxpath>
         else
             $steps
     return (
@@ -1087,8 +1831,10 @@ declare function f:parsePathExpr($text as xs:string, $context as map(*))
 declare function f:parseSteps($text as xs:string?, 
                               $precedingOperator as xs:string?,
                               $context as map(*))
-        as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_STEPS: ')
+        as item()* {
+    if (not($text)) then () else
+    
+    let $DEBUG := f:trace($text, 'parse.steps', 'INTEXT_STEPS: ')
     let $FOXSTEP_SEPERATOR := map:get($context, 'FOXSTEP_SEPERATOR')
     let $NODESTEP_SEPERATOR := map:get($context, 'NODESTEP_SEPERATOR')
     
@@ -1159,10 +1905,12 @@ declare function f:parseStep($text as xs:string?,
                              $precedingOperator as xs:string?,
                              $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text.step', 'INTEXT_STEP: ')  
+    let $DEBUG := f:trace($text, 'parse.step', 'INTEXT_STEP: ')  
     let $postfixExprEtc := f:parsePostfixExpr($text, $context)
     let $postfixExpr := $postfixExprEtc[. instance of node()]
     return
+        (: first, try to parse step as postfix expr 
+           (primary expr + optional postfix) :)
         if ($postfixExpr) then
             let $textAfter := f:extractTextAfter($postfixExprEtc)
             let $wrapperName :=
@@ -1180,7 +1928,14 @@ declare function f:parseStep($text as xs:string?,
             return 
                 ($parsed, $textAfter)
                 (: ($postfixExpr, $textAfter) :)
-        else 
+                
+        (: archive entry step :)        
+        else if (matches($text, '^#archive#(\s*(/.*)?)?$')) then (
+            <foxStep><archiveEntry/></foxStep>,
+            replace($text, '^#archive#\s*', '')
+        )    
+        else
+            (: then, try to parse as fox axis step :)
             let $foxAxisStepEtc := f:parseFoxAxisStep($text, $context)
             let $foxAxisStep := $foxAxisStepEtc[. instance of node()]
             return
@@ -1189,6 +1944,7 @@ declare function f:parseStep($text as xs:string?,
                     return 
                         ($foxAxisStep, $textAfter)
                 else
+                    (: finally, try to parse as node axis step :)
                     let $nodeAxisStepEtc := f:parseNodeAxisStep($text, $context)
                     let $nodeAxisStep := $nodeAxisStepEtc[. instance of node()]
                     let $textAfter := f:extractTextAfter($nodeAxisStepEtc)
@@ -1201,9 +1957,13 @@ declare function f:parseStep($text as xs:string?,
                             ($nodeAxisStep, $textAfter)
 };
 
+(:~
+ : Parses a fox axis step, consisting of an explicit or implicit axis
+ : and a name test.
+ :)
 declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
         as item()* {
-    let $DEBUG := f:trace($text, 'parse.text.step.fox_axis', 'INTEXT_AXIS_STEP: ')
+    let $DEBUG := f:trace($text, 'parse.fox_axis_step', 'INTEXT_FOX_AXIS_STEP: ')
     let $acceptAbbrevSyntax := map:get($context, 'IS_CONTEXT_URI') eq true()
     let $FOXSTEP_SEPERATOR := map:get($context, 'FOXSTEP_SEPERATOR')
     let $FOXSTEP_NAME_DELIM := map:get($context, 'FOXSTEP_NAME_DELIM')
@@ -1214,8 +1974,9 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
         else
             concat('descendant-or-self~::*', $FOXSTEP_SEPERATOR, substring($text, 2))
     let $reverseAxis :=
+        (: .. or ... :)
         if ($acceptAbbrevSyntax and matches($text, '(^\.\.(\.)?)')) then
-            replace($text, '(^\.\.(\.)?).*', '$1', 's')
+             replace($text, '(^\.\.(\.)?).*', '$1', 's')
         else if (starts-with($text, 'parent~::')) then 'parent~::'            
         else if (starts-with($text, 'ancestor~::')) then 'ancestor~::'        
         else if (starts-with($text, 'ancestor-or-self~::')) then 'ancestor-or-self~::'        
@@ -1225,8 +1986,9 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
         
     let $forwardAxis := 
         if ($reverseAxis) then ()
-        else if (starts-with($text, $FOXSTEP_SEPERATOR)) then $FOXSTEP_SEPERATOR
+        else if (starts-with($text, $FOXSTEP_SEPERATOR)) then $FOXSTEP_SEPERATOR        
         else if (starts-with($text, 'self~::')) then 'self~::'        
+        else if (starts-with($text, 'child~::')) then 'child~::'        
         else if (starts-with($text, 'descendant~::')) then 'descendant~::'        
         else if (starts-with($text, 'descendant-or-self~::')) then 'descendant-or-self~::'       
         else if (starts-with($text, 'following-sibling~::')) then 'following-sibling~::'       
@@ -1234,8 +1996,9 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
             
     let $axis := ($reverseAxis, $forwardAxis)
     let $axisName :=
-        if ($axis eq $FOXSTEP_SEPERATOR) then 'descendant'
+        if ($axis eq $FOXSTEP_SEPERATOR) then 'descendant'       
         else if ($axis eq 'self~::') then 'self'        
+        else if ($axis eq 'child~::') then 'child'        
         else if ($axis eq 'descendant~::') then 'descendant'        
         else if ($axis eq 'descendant-or-self~::') then 'descendant-or-self'
         else if ($axis eq 'following-sibling~::') then 'following-sibling'        
@@ -1254,79 +2017,35 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
         
     let $afterAxis := f:skipOperator($text, $axis)
     
-    (: step name in non-abbreviated syntax :)
-    let $nameNotAbbrev :=
-        if (not(starts-with($afterAxis, $FOXSTEP_NAME_DELIM))) then ()
-        else if (matches($afterAxis,
-            concat('^', $FOXSTEP_NAME_DELIM, 
-                        '([^', $FOXSTEP_NAME_DELIM, ']|', $FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM, 
-                        ')*', 
-                        $FOXSTEP_NAME_DELIM, '$'), 's')) then $afterAxis
-        else replace($afterAxis, 
-            concat('^(', $FOXSTEP_NAME_DELIM, 
-                        '([^', $FOXSTEP_NAME_DELIM, ']|', $FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM, 
-                        ')*', 
-                        $FOXSTEP_NAME_DELIM, ').*'), 
-                        '$1', 's')[not(. eq $afterAxis)]
+    (: name test in canonical syntax :)
+    let $nameEtc :=
+        let $canonicalNameEtc :=
+            f:parseItem_canonicalFoxnameTest($afterAxis, $FOXSTEP_NAME_DELIM)            
+        return 
+            if (exists($canonicalNameEtc)) then $canonicalNameEtc
+            else if ($acceptAbbrevSyntax) then 
+                f:parseItem_abbreviatedFoxnameTest($afterAxis, $FOXSTEP_ESCAPE)
+            else ()
 
-    (: if non-abbeviated syntax is expected but no conformant name is encountered,
-       abort the attempt to parse the step as a fox axis step :)
-    return if (not($nameNotAbbrev) and not($acceptAbbrevSyntax)) then () else
+    (: canonical name test expected and not found => return :)
+    return if (empty($nameEtc) and not($acceptAbbrevSyntax)) then () else
     
-    (: abbreviated name, containing escapes :)
-    let $nameAbbrevEsc :=
-        if ($nameNotAbbrev) then () 
-        else       
-                if (not(matches($afterAxis,
-                concat(
-                '^ (',               '[^ ', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \d . ] |',
-                    $FOXSTEP_ESCAPE, '[  ', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \d . ] )'
-                   ), 'x'))) then ()
-                else
-                replace($afterAxis,
-                concat(
-                '^(',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \d . ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \d . ] )',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \s ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\] \\/ <>()=!|, \s ] )*', 
-                ' ).*'), '$1', 'sx')
-    
-            (: name is terminated by any of the following characters (unless escaped): 
-                  FOXSTEP_ESCAPE [] \/ <> () =!|,
-               Additional rule: a leading digit must be escaped.
-               Escape character: ~
-            :)
-
-    (: name, any escapes removed :)
-    let $name :=
-        (: non-abbreviated name: remove delimiters, un-double occurrences of the delimiter :)
-        if ($nameNotAbbrev) then
-            replace(substring($nameNotAbbrev, 2, string-length($nameNotAbbrev) - 2), 
-                concat($FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM),
-                       $FOXSTEP_NAME_DELIM)
-        (: abbreviated name: remove escapes :)
-        else
-            replace($nameAbbrevEsc, concat($FOXSTEP_ESCAPE, '(.)'), '$1')
-            
-    let $regex := 
-        if (not($name)) then ()
-        else 
-            let $raw := concat('^', 
-                        replace(replace(replace(replace($name, '\.', '\\.'), 
-                                                               '\*', '.*', 's'), 
-                                                               '\+', '\\+', 's'),                                                               
-                                                               '\?', '.', 's'), 
-                               '$')
-            let $raw := replace($raw, '[()]', '\\$0')
-            return $raw
-            
-    let $afterName :=
-        if ($afterAxis = ($nameNotAbbrev, $nameAbbrevEsc)) then ()
-        else if ($nameNotAbbrev) then f:skipOperator($afterAxis, $nameNotAbbrev)
-        else if ($nameAbbrevEsc) then f:skipOperator($afterAxis, $nameAbbrevEsc)
-        else $afterAxis
+    let $name := $nameEtc[1]                        
+    let $afterName := 
+        if (not($name)) then $afterAxis
+        else $nameEtc[2]
         
+    let $regex := 
+        if (not($name)) then () else
+ 
+        let $raw := concat('^', 
+                    replace(replace(replace(replace($name, '\.', '\\.'), 
+                                                            '\*', '.*', 's'), 
+                                                            '\+', '\\+', 's'),                                                               
+                                                            '\?', '.', 's'), 
+                    '$')
+        let $raw := replace($raw, '[()]', '\\$0')
+        return $raw
     return
         if (starts-with($afterName, '[')) then
             (: update context - context is URI (as the current step is a fox axis step) :)
@@ -1354,7 +2073,7 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
  :)
 declare function f:parseNodeAxisStep($text as xs:string?, $context as map(*))
         as item()* {
-    let $DEBUG := f:trace($text, 'parse.text.step.node_axis', 'NODE_AXIS_STEP_EXPR: ') return            
+    let $DEBUG := f:trace($text, 'parse.node_axis_step', 'NODE_AXIS_STEP_EXPR: ') return            
     let $DEBUG := map:get($context, 'IS_CONTEXT_URI')
     
     let $NODESTEP_SEPERATOR := map:get($context, 'NODESTEP_SEPERATOR')
@@ -1363,14 +2082,14 @@ declare function f:parseNodeAxisStep($text as xs:string?, $context as map(*))
             concat('descendant-or-self::node()', $NODESTEP_SEPERATOR, substring($text, 2))
         else $text
         
-    let $explicitAxis := 
+    let $explicitAxis :=
         replace($text, 
             concat(
                 '^(\.\.|@|',
                 '(child|descendant|descendant-or-self|self|attribute|following-sibling|following',
                 '|parent|ancestor|ancestor-or-self|preceding-sibling|preceding)::).*'), '$1', 'sx')
-            [not(. eq $text)]
-            
+            [not(. eq $text) or $text eq '..']
+
     let $axisName :=
         if (not($explicitAxis)) then 'child'
         else if ($explicitAxis eq '@') then 'attribute'
@@ -1381,7 +2100,7 @@ declare function f:parseNodeAxisStep($text as xs:string?, $context as map(*))
         if (not($explicitAxis)) then $text
         else if ($explicitAxis eq '..') then ()
         else f:skipOperator($text, $explicitAxis)
-        
+
     let $nodeTestEtc :=
         if ($explicitAxis eq '..') then (
             <kindTest nodeKind="node"/>,
@@ -1704,7 +2423,7 @@ declare function f:parsePrimaryExpr($text as xs:string, $context as map(*))
     else if (starts-with($text, '(')) then f:parseParenthesizedExpr($text, $context)
     else if (matches($text, '^["&apos;]')) then f:parseStringLiteral($text, $context)
     else if (matches($text, '^(\d|\.\d)')) then f:parseNumericLiteral($text, $context)
-    else if (matches($text, '^\.([^./].*)?$')) then f:parseContextItem($text, $context) 
+    else if (matches($text, '^\.([^./].*)?$', 's')) then f:parseContextItem($text, $context) 
     else if (matches($text, '^function\s*\(', 's')) then f:parseInlineFunctionExpr($text, $context)    
     else if (matches($text, '^\i\c*\s*\(')) then f:parseFunctionCall($text, $context)
     else if (matches($text, '^\i\c*\s*#\s*\d', 's')) then f:parseNamedFunctionItem($text, $context)   
@@ -1731,7 +2450,7 @@ declare function f:parseVariableRef($text as xs:string, $context as map(*))
             f:createFoxpathError('SYNTAX_ERROR', 
                 concat('Invalid variable reference: ', $text))
         else (
-            <var>{$name/(@localName, @namespace)}</var>,
+            <var>{$name/(@localName, @prefix, @namespace)}</var>,
             $textAfter
         )
 };
@@ -1740,7 +2459,7 @@ declare function f:parseVariableRef($text as xs:string, $context as map(*))
  : Parses a parenthesized expression.
  :
  : Syntax: 
- :     '(' Expr ')'
+ :     '(' Expr? ')'
  :
  : @param text the text to be parsed
  : @return a structured representation of the parenthesized expression, followed
@@ -1749,6 +2468,13 @@ declare function f:parseVariableRef($text as xs:string, $context as map(*))
 declare function f:parseParenthesizedExpr($text as xs:string, $context as map(*))
         as item()+ {
     let $textAfterOpen := replace($text, '^\(\s*', '')
+    return
+        (: special case: empty sequence () :)
+        if (starts-with($textAfterOpen, ')')) then (
+            <emptySequence/>,
+            f:skipOperator($textAfterOpen, ')')
+        ) else
+        
     let $seqExprEtc := f:parseSeqExpr($textAfterOpen, $context)
     let $seqExpr := $seqExprEtc[. instance of node()]
     let $textAfter := f:extractTextAfter($seqExprEtc)    
@@ -2086,7 +2812,7 @@ declare function f:parseParamSequenceType($text as xs:string, $context as map(*)
  :)
 declare function f:parseStringLiteral($text as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_STRING_LITERAL: ') return 
+    let $DEBUG := f:trace($text, 'parse.text.string', 'INTEXT_STRING_LITERAL: ') return 
     let $char1 := substring($text, 1, 1)
     let $text2 := substring($text, 2)    
     let $literalString :=
@@ -2251,7 +2977,7 @@ declare function f:parseCastableExpr($text as xs:string, $context as map(*))
  : Parses a cast expression.
  :
  : Syntax:
- :     CastExpr ::= UnaryExpr ( "cast" "as" SequenceType)? 
+ :     CastExpr ::= ArrowExpr ( "cast" "as" SingleType)? 
  :
  : @param text a text consisting of the expression text, possibly
  :    followed by further text
@@ -2260,23 +2986,23 @@ declare function f:parseCastableExpr($text as xs:string, $context as map(*))
  :)
 declare function f:parseCastExpr($text as xs:string, $context as map(*))
         as item()+ {
-    let $DEBUG := f:trace($text, 'parse.text', 'INTEXT_CAST: ')        
-    let $unaryExprEtc := f:parseUnaryExpr($text, $context)
-    let $unaryExpr := $unaryExprEtc[. instance of node()]
-    let $textAfter := f:extractTextAfter($unaryExprEtc)    
+    let $DEBUG := f:trace($text, 'parse.cast', 'INTEXT_CAST: ')        
+    let $arrowExprEtc := f:parseArrowExpr($text, $context)
+    let $arrowExpr := $arrowExprEtc[. instance of node()]
+    let $textAfterArrow := f:extractTextAfter($arrowExprEtc)    
     return 
-        if (matches($textAfter, '^cast\s+as\s+')) then
-            let $textAfterOperator := replace($textAfter, '^cast\s+as\s+(.*)', '$1')
+        if (matches($textAfterArrow, '^cast\s+as\s+')) then
+            let $textAfterOperator := replace($textAfterArrow, '^cast\s+as\s+(.*)', '$1')
             let $singleTypeEtc := f:parseSingleType($textAfterOperator, $context)
             let $singleType := $singleTypeEtc[. instance of node()]
-            let $textAfter := f:extractTextAfter($singleTypeEtc)
+            let $textAfterSingleType := f:extractTextAfter($singleTypeEtc)
             return (
-                <cast>{$unaryExpr, $singleType}</cast>,
-                $textAfter
+                <cast>{$arrowExpr, $singleType}</cast>,
+                $textAfterSingleType
             )
         else (
-            $unaryExpr, 
-            $textAfter
+            $arrowExpr, 
+            $textAfterArrow
         )
 };
 
@@ -2521,13 +3247,13 @@ declare function f:parseNodeTextCommentPiTest($text as xs:string, $context as ma
         as item()* {
     let $parsedEtc :=
         if (matches($text, '^(node|text|comment|processing-instruction)\s*\(\s*\)')) then
-            let $kind := replace($text, '^(node|text|comment|processing-instruction).*', '$1')
+            let $kind := replace($text, '^(node|text|comment|processing-instruction).*', '$1', 'sx')
             let $textAfter := replace($text, concat('^', $kind, '\s*\(\s*\)\s*'), '')
             let $kindTestText := concat($kind, '()')
             let $kindTest := <kindTest nodeKind="{$kind}" text="{$kindTestText}"/>
             return ($kindTest, $textAfter)     
-        else if (matches($text, '^processing-instruction \s*\(\s* ([^)\s]+) \s*\)', 'x')) then
-            let $nameRaw := replace($text, '^processing-instruction \s*\(\s* ([^)\s]+) \s*\).*', '$1', 'x')
+        else if (matches($text, '^processing-instruction \s*\(\s* ([^)\s]+) \s*\)', 'sx')) then
+            let $nameRaw := replace($text, '^processing-instruction \s*\(\s* ([^)\s]+) \s*\).*', '$1', 'sx')
             let $name := (
                 if (matches($nameRaw, '^["'']')) then
                     let $nameEtc := f:parseStringLiteral($nameRaw, $context)
@@ -2678,6 +3404,8 @@ declare function f:parseSchemaElementOrAttributeTest($text as xs:string, $contex
  :)
 declare function f:parseVarName($text as xs:string, $context as map(*))
         as item()* {
+    let $DEBUG := f:trace($text, 'parse.var_name', 'INTEXT_VAR_NAME: ') return
+    
     if (not(starts-with($text, '$'))) then 
         $text 
     else 
@@ -2715,7 +3443,7 @@ declare function f:parseNametest($text as xs:string, $context as map(*))
     let $s := $text || '###'
 
     (: case *:lname :)
-    let $match := replace($s, '(^\*:\i[\c-[:]]*).*', '$1')[not(. eq $s)]
+    let $match := replace($s, '(^\*:\i[\c-[:]]*).*', '$1', 's')[not(. eq $s)]
     return
         if ($match) then
             let $lname := substring-after($match, ':')
@@ -2727,7 +3455,7 @@ declare function f:parseNametest($text as xs:string, $context as map(*))
         else
 
     (: case prefix:* :)
-    let $match := replace($s, '(^\i[\c-[:]]*:\*).*', '$1')[not(. eq $s)]
+    let $match := replace($s, '(^\i[\c-[:]]*:\*).*', '$1', 's')[not(. eq $s)]
     return
         if ($match) then
             let $prefix := substring-before($match, ':')
@@ -2739,10 +3467,10 @@ declare function f:parseNametest($text as xs:string, $context as map(*))
         else
 
     (: case Q{...}* :)
-    let $match := replace($s, '^(Q\{.*?\}\*).*', '$1')[not(. eq $s)]
+    let $match := replace($s, '^(Q\{.*?\}\*).*', '$1', 's')[not(. eq $s)]
     return
         if ($match) then
-            let $uri := replace($match, '^Q\{(.*?)\}.*', '$1')
+            let $uri := replace($match, '^Q\{(.*?)\}.*', '$1', 's')
             let $textAfter := substring($text, 1 + string-length($match))
             return (
                 <nameTest namespace="{$uri}" localName="*" text="{$match}"/>,
@@ -2771,9 +3499,15 @@ declare function f:parseNametest($text as xs:string, $context as map(*))
  : Parses an EQName. The structured representation is a "name" element with 
  : attributes providing the name components:
  : @localName - provides the local name
- : @uri - provides the namespace URI (optional)
+ : @namespace - provides the namespace URI (optional)
  : @prefix - provides the prefix (optional)
  : @text - provides the original name text
+ : 
+ : Note. The resolving of a prefix is postponed to a step finalizing
+ :    the parsing; in case of a prefixed name, here only the prefix is
+ :    recorded.
+ : Note. If the text does not begin with an EQName, the text is returned
+ : as-is.
  :
  : @param text a text consisting of the name text, possibly followed by 
  :     further text
@@ -2783,7 +3517,7 @@ declare function f:parseNametest($text as xs:string, $context as map(*))
  :)
 declare function f:parseEQName($text as xs:string, $context as map(*))
         as item()* {
-    let $DEBUG := f:trace($text, 'parse.text.eqname', 'INTEXT_EQNAME: ') return
+    let $DEBUG := f:trace($text, 'parse.eqname', 'INTEXT_EQNAME: ') return
 
     let $nameRegex := '^(\i[\c-[:]]*(:\i[\c-[:]]*)?).*'
     let $s := $text || '###'
@@ -2906,3 +3640,112 @@ declare function f:skipOperator($text as xs:string, $operator as xs:string?)
         as xs:string {
     replace(substring($text, 1 + string-length($operator)), '^\s+', '')
 };
+
+(:~
+ : Parses a text which may begin with a canonical fox name test.
+ : If this is not the case, the function returns the empty sequence.
+ : Otherwise, it returns one or two strings: (1) the name pattern
+ : encoded by the name test; (2) if the name test is followed by
+ : further text - the text following the canonical name test.
+ :
+ : @param text the text to be parsd
+ : @param FOXSTEP_NAME_DELIM the character used as delimiter of canonical fox name tests
+ : @return the name pattern and the string following it, if any;
+ :        the empty sequence if the text does not begin with an
+ :        abbreviated name test
+ :) 
+declare function f:parseItem_canonicalFoxnameTest($text as xs:string, $FOXSTEP_NAME_DELIM as xs:string)
+        as xs:string* {
+        
+    if (not(starts-with($text, $FOXSTEP_NAME_DELIM))) then () else
+    
+    let $patternText :=
+    
+        (: complete text is a fox name test :)
+        if (matches($text,
+            concat('^', $FOXSTEP_NAME_DELIM, 
+                   '([^', $FOXSTEP_NAME_DELIM, ']|', $FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM, ')*', 
+                        $FOXSTEP_NAME_DELIM, '$'), 's')) 
+        then $text
+    
+        (: the text starts with a fox name test :)
+        else replace($text, 
+                concat('^(', $FOXSTEP_NAME_DELIM, 
+                        '([^', $FOXSTEP_NAME_DELIM, ']|', $FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM, 
+                        ')*', 
+                        $FOXSTEP_NAME_DELIM, ').*'), 
+                '$1', 's')
+                [not(. eq $text)]
+    return
+        if (empty($patternText)) then () else (
+        
+        (: remove delimiters and escaping :)
+            replace(
+                substring($patternText, 2, string-length($patternText) - 2), 
+                concat($FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM),
+                $FOXSTEP_NAME_DELIM
+            )
+            ,
+            substring($text, string-length($patternText) + 1)
+        )
+};
+
+(:~
+ : Parses a text which may begin with an abbreviated fox name test.
+ : If this is not the case, the function returns the empty sequence.
+ : Otherwise, it returns one or two strings: (1) the name pattern
+ : encoded by the name test; (2) if the name test is followed by
+ : further text - the text following the abbreviated name test.
+ :
+ : @param text the text to be parsd
+ : @param FOXSTEP_ESCAPE the character used within abbreviated fox name tests
+ :        as escape character
+ : @return the name pattern and the string following it, if any;
+ :        the empty sequence if the text does not begin with an
+ :        abbreviated name test
+ :) 
+declare function f:parseItem_abbreviatedFoxnameTest($text as xs:string, 
+                                                    $FOXSTEP_ESCAPE as xs:string)
+        as xs:string* {
+
+    (: 
+       The name test is terminated by any of the following characters (unless escaped): 
+       FOXSTEP_ESCAPE []} \/ <> () =!|,;
+       Any of these characters occurring within the name pattern must be escaped
+       by a preceding escape character.
+       
+       Additional rule: a leading digit must be escaped.
+       
+       Escape character: ~
+       
+       The pattern consists of a sequence of items consisting of 
+       (1) one of the characters which are not escaped, 
+       (2) or an escape character followed by one of the characters which are escaped       
+    :)
+
+    (: if the text does not start with an unescaped or escaped fox name character ... :)
+    if (not(matches($text,
+            concat(
+            '^(',            '[^ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] |',
+            $FOXSTEP_ESCAPE, '[  ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] )'
+            ), 'sx'))) 
+    then ()
+            
+    (: extract the leading fox name test :)            
+    else
+        let $namePattern :=
+            replace($text,
+                concat(
+                '^(',
+                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] |',
+                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] )',
+                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \s ] |',
+                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \s ] )*', 
+                ' ).*'), '$1', 'sx')
+                
+        return (
+            (: name, after removing escapes :)
+            replace($namePattern, concat($FOXSTEP_ESCAPE, '(.)'), '$1'),
+            substring($text, string-length($namePattern) + 1) ! replace(., '^\s+', '')
+        )
+};        

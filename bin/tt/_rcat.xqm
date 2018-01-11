@@ -139,7 +139,7 @@ declare function m:resolveRcat($rcat as node()?, $pquery as xs:string?)
  :)
 declare function m:rcatFromFoxpath($foxpath as xs:string)
         as element(rcat) {
-    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()))        
+    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())        
     return
         if ($selFiles instance of element(errors)) then
             tt:wrapErrors(
@@ -192,7 +192,7 @@ declare function m:rcatFromFoxpath($foxpath as xs:string)
             attribute csv.toRec {($properties/@toRec, '0')[1]}
         ) else ()
 
-    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()))        
+    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())        
     return
         if ($selFiles instance of element(errors)) then
             tt:wrapErrors(
@@ -200,7 +200,7 @@ declare function m:rcatFromFoxpath($foxpath as xs:string)
             )
         else 
             let $baseURI := file:current-dir() ! replace(., '\\', '/')
-            return trace(
+            return
                 <rcat foxpath="{$foxpath}" 
                       format="{$format}" 
                       targetFormat="{$targetFormat}"
@@ -210,7 +210,7 @@ declare function m:rcatFromFoxpath($foxpath as xs:string)
                     attribute xml:base {$baseURI},
                     $furtherAtts,
                     $selFiles ! <resource href="{.}"/> 
-                }</rcat> , 'RCAT: ')         
+                }</rcat>         
 };
 
 

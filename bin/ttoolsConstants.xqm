@@ -16,10 +16,17 @@ declare variable $c:cfg :=
                 <module>_docs.xqm</module>     
                 <module feature="basex">_foxpath.xqm</module>                
                 <module feature="basex">_foxpath-functions.xqm</module>                
+                <module feature="basex">_foxpath-fox-functions.xqm</module>                
                 <module feature="basex">_foxpath-parser.xqm</module>                
                 <module feature="basex">_foxpath-util.xqm</module>                
                 <module feature="basex">_foxpath-processorDependent.xqm</module>                
-                <module feature="basex">_foxpath-resourceTreeTypeDependent.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-basex.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-svn.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-rdf.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-utree.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-github.xqm</module>                
+                <module feature="basex">_foxpath-uri-operations-archive.xqm</module>                
                 <module>_help.xqm</module>                
                 <module>_log.xqm</module>                
                 <module>_nameFilter.xqm</module>            

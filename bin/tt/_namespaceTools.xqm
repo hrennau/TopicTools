@@ -41,10 +41,10 @@ import module namespace pt="http://www.ttools.org/xquery-functions" at "_constan
 
 declare copy-namespaces preserve, inherit;
 
-declare namespace z="http://www.xsdr.org/ns/structure";
-declare namespace s="http://www.xsdr.org/ns/structure";
+declare namespace z="http://www.xsdplus.org/ns/structure";
+declare namespace s="http://www.xsdplus.org/ns/structure";
 declare namespace xs="http://www.w3.org/2001/XMLSchema";
-declare namespace xe="http://www.xsdr.org/ns/errors";
+declare namespace xe="http://www.xsdplus.org/ns/errors";
 
 (:~
  : Adds an in-scope namespace to an element, if it does not already have it.
@@ -459,10 +459,11 @@ declare function m:normalizeQName(
 
 (:~
  : Resolves a normalized QName, using the namespace map which had been used
- : for the normalization.
+ : for the normalization. The resulting QName has a lexical name without prefix. 
  :
  : @param name the name string to be resolved
  : @nsmap  a map associating namespace URIs with prefixes
+ : @return the QName 
  :)
 declare function m:resolveNormalizedQName($name as xs:string, $nsmap as element(z:nsMap))
       as xs:QName? {
@@ -473,6 +474,24 @@ declare function m:resolveNormalizedQName($name as xs:string, $nsmap as element(
                  else $name
    return
       QName($nsmap/*[@prefix eq $prefix]/@uri, $lname)                      
+};
+
+(:~
+ : Resolves a normalized QName, using the namespace map which had been used
+ : for the normalization and keeping the original prefix.
+ :
+ : @param name the name string to be resolved
+ : @nsmap  a map associating namespace URIs with prefixes
+ : @return the QName
+ :)
+declare function m:resolveNormalizedQNamePrefixed($name as xs:string, 
+                                                  $nsmap as element(z:nsMap))
+      as xs:QName? {
+   if (empty($name)) then () else
+   
+   let $prefix := substring-before($name, ':')
+   return
+      QName($nsmap/*[@prefix eq $prefix]/@uri, $name)                      
 };
 
 (:
