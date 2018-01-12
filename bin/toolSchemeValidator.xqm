@@ -182,22 +182,24 @@ declare variable $f:predefinedTypesDict :=
         <type name="nameFilterMap" reqFeature=""/>        
         <type name="pathFilter" reqFeature=""/>        
         <type name="docFLX" reqFeature="file"/>        
-        <type name="docURI" reqFeature=""/>        
-        <type name="docSEARCH" reqFeature=""/>        
-        <type name="textURI" reqFeature="xq30ge"/>        
-        <type name="xtextURI" reqFeature="xq30ge"/>        
-        <type name="csvURI" reqFeature="xq30ge"/>        
-        <type name="linesURI" reqFeature="xq30ge"/>        
+        <type name="docSEARCH" reqFeature=""/>
+        <type name="docURI" reqFeature=""/>
+        <type name="docCAT" reqFeature=""/>        
         <type name="docDFD" reqFeature="file"/>        
         <type name="docFOX" reqFeature="file"/>        
+        <type name="textURI" reqFeature="xq30ge"/>        
         <type name="textDFD" reqFeature="file xq30ge"/>        
         <type name="textFOX" reqFeature="file xq30ge"/>        
-        <type name="xtextDFD" reqFeature="file xq30ge"/>        
+        <type name="xtextURI" reqFeature="xq30ge"/>
+        <type name="xtextDFD" reqFeature="file xq30ge"/>
+        <type name="jsonURI" reqFeature="xq30ge"/>    
+        <type name="jsonFOX" reqFeature="file xq30ge"/>        
+        <type name="csvURI" reqFeature="xq30ge"/>        
         <type name="csvDFD" reqFeature="file xq30ge"/>
         <type name="csvFOX" reqFeature="file xq30ge"/>        
+        <type name="linesURI" reqFeature="xq30ge"/>        
         <type name="linesDFD" reqFeature="file xq30ge"/>
         <type name="linesFOX" reqFeature="file xq30ge"/>        
-        <type name="docCAT" reqFeature=""/>        
         <type name="catDFD" reqFeature="file"/>        
         <type name="catFOX" reqFeature="file"/>        
         <type name="directory" reqFeature="file"/>     

@@ -49,7 +49,7 @@ declare variable $c:cfg :=
                 <module>_request.xqm</module>
                 <module>_request_facets.xqm</module>                
                 <module>_request_getters.xqm</module>                
-                <module>_request_parser.xqm</module>                
+                <!-- <module>_request_parser.xqm</module> -->                
                 <module>_request_setters.xqm</module>
                 <module>_request_valueParser.xqm</module>                
                 <module>_resourceAccess.xqm</module>                
