@@ -474,6 +474,18 @@ declare function f:resolveStaticFunctionCall($call as element(),
                     $deletes
                 ), '&#xA;')
 
+        (: function `write-file` 
+           ====================== :)
+        else if ($fname eq 'write-file') then
+            let $items := $call/*[1] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            let $fname := $call/*[2] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)            
+            let $encoding := $call/*[3] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+
+            let $text := string-join($items, '&#xA;')
+            let $encoding := ($encoding, 'UTF8')[1]
+            return
+                file:write($fname, $text, map{'encoding': $encoding})
+                
         (: function `write-files` 
            ====================== :)
         else if ($fname eq 'write-files') then
@@ -987,8 +999,11 @@ declare function f:resolveStaticFunctionCall($call as element(),
            ===================== :)
         else if ($fname eq 'root') then
             let $arg := 
-                let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
-                return ($explicit, $context)[1]
+                let $arg1 := $call/*[1]
+                return
+                    if ($arg1) then 
+                        $arg1/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                    else $context
             return
                 root($arg)
 
@@ -1023,9 +1038,9 @@ declare function f:resolveStaticFunctionCall($call as element(),
            ================= :)
         else if ($fname eq 'string') then
             let $arg := 
-                let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
-                return
-                    ($explicit, $context)[1]
+                if ($call/*[1]) then 
+                    $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                else $context                    
             return
                 string($arg)
                 
