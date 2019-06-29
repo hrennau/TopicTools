@@ -302,13 +302,12 @@ declare function m:_resolveRcat_xml($rcat as node()?, $pquery as xs:string?)
     let $rcat := $rcat/descendant-or-self::*[1]   
     return if ($rcat/self::z:errors) then $rcat else
     
-    let $pq :=
-        if (not($pquery)) then () else m:_parsePquery($pquery)
-    for $rdesc in $rcat//*[@href][doc-available(@href)]
-    where not($pq) or m:_matchesPquery($rdesc, $pq)
+    let $pq := if (not($pquery)) then () else m:_parsePquery($pquery)
+    for $href in $rcat//*/@href
+    where not($pq) or m:_matchesPquery($href/.., $pq)
     return
-        let $uri := $rdesc/@href/resolve-uri(., base-uri(..)) 
-        return tt:doc($uri)        
+        let $uri := m:_resolveRcatHref($href)
+        return if (doc-available($uri)) then doc($uri) else ()
 };
 
 (:#xq30ge#:)
@@ -742,6 +741,14 @@ declare function m:_getFiles($dir as xs:string,
     )            
 };
 (:##:)
+
+(:~
+ : Resolves a href value from an RCAT to a URI.
+ :)
+declare function m:_resolveRcatHref($href as attribute(href)) as xs:string {
+        if ($href/starts-with(., 'basex://')) then replace($href, '^basex://', '')
+        else resolve-uri($href, base-uri($href/..)) 
+};
 
 (:
  :
