@@ -230,7 +230,6 @@ declare function f:pretty($n as node())
             if ($version lt 78) then 'eval-' else 'eval',
             if ($version lt 78) then 'sql-' else 'sql',            
             if ($version lt 99) then 'mongo-' else 'mongo'
-
         )
     ) else if (matches($flavor, '^saxonhe\d\d')) then (
         let $version := xs:integer(replace($flavor, '^saxonhe', '', 'i'))

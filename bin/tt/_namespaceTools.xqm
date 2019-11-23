@@ -41,10 +41,10 @@ import module namespace pt="http://www.ttools.org/xquery-functions" at "_constan
 
 declare copy-namespaces preserve, inherit;
 
-declare namespace z="http://www.xsdplus.org/ns/structure";
-declare namespace s="http://www.xsdplus.org/ns/structure";
+declare namespace z="http://www.ttools.org/structure";
+declare namespace s="http://www.ttools.org/structure";
 declare namespace xs="http://www.w3.org/2001/XMLSchema";
-declare namespace xe="http://www.xsdplus.org/ns/errors";
+declare namespace xe="http://www.ttools.org/errors";
 
 (:~
  : Adds an in-scope namespace to an element, if it does not already have it.
