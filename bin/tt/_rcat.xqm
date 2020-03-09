@@ -421,11 +421,18 @@ declare function m:_resolveRcat_jsonx($rcat as node()?)
     return if ($rcat/self::z:errors) then $rcat else
     
     let $encoding := ($rcat/@encoding, 'ISO-8859-1')[1]
-    return    
-        for $uri in $rcat//@href
-        let $text := try {tt:unparsed-text($uri)} catch * {()}
-        return
-            try {json:parse($text)/*} catch *  {()}
+    
+    for $uri in $rcat//@href
+    let $text := try {tt:unparsed-text($uri)} catch * {()}
+    let $docRaw :=
+        try {json:parse($text)/*} catch *  {()}
+    let $doc :=
+        if (not($docRaw)) then () else
+        copy $docRaw_ := $docRaw
+        modify insert node attribute xml:base {$uri} into $docRaw_
+        return $docRaw_
+    return $doc       
+        
 };
 
 (:##:)
