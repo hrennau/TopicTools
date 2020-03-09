@@ -116,6 +116,7 @@ declare function f:resolveFoxpath($foxpath as xs:string,
                                   $externalVariableBindings as map(xs:QName, item()*)?)
         as item()* {
     let $DEBUG := f:trace($foxpath, 'parse.resolve_foxpath', 'INTEXT_RESOLVE_FOXPATH: ')
+    let $context := f:editInitialContext($context)
     let $tree := f:trace(i:parseFoxpath($foxpath, $options), 'parse', 'FOXPATH_ELEM: ')
     let $errors := $tree/self::errors 
     return 
@@ -1996,7 +1997,7 @@ declare function f:resolveFunctionCall($call as element(),
                 ($explicit, $context)[1]
         let $useOptions :=
             if ($context and $context instance of node()) then $options
-            else if ($context?IS_CONTEXT_URI) then $options
+            (: else if ($context?IS_CONTEXT_URI) then $options :)   (: 20200213 - commented out _TO_DO_ must be analyzed :)
             else
                 map:put($options, 'IS_CONTEXT_URI', true())
         return
@@ -2071,3 +2072,16 @@ declare function f:pattern2Regex($pattern as xs:string)
            replace(replace($pattern, '\.', '\\.'), '\*', '.*'), 
            '$')        
 };
+
+(:~
+ : Edits the initial context.
+ :
+ : @param context the initial context
+ : @return the edited context
+ :)
+declare function f:editInitialContext($context as item()?) as item()? {
+    if (empty($context)) then $context
+    else if ($context instance of node()) then $context
+    else $context ! file:path-to-native(.) ! replace(., '\\', '/') ! replace(., '/$', '')
+};
+

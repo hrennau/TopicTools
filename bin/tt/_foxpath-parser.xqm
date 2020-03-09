@@ -1694,17 +1694,9 @@ declare function f:parsePathExpr($text as xs:string, $context as map(*))
             <foxRoot path="{replace($text, '^(rdf-file://.:/).*', '$1')}"/>        
         else if (starts-with($text, 'basex:/')) then
             let $rootUri := replace($text, '^(basex:/+).*', '$1')
-(:            
-            let $db := replace($text, '^(basex://.*?/).*', '$1')
-            let $db := replace($db, '[^/]$', '$0/')
-:)            
             return
                 <foxRoot path="basex://"/>        
         else if (matches($text, 'svn-(file|https?):/+')) then
-            (: let $DUMMY := trace((), concat('GOING TO FIND REPO ROOT; TEXT: ', $text)) :)
-(:            
-            let $repoPath := trace(f:getSvnRootUri(substring($text, 5)) , 'REPO_PATH: ')
-:)
             let $repoPath := replace($text, 'svn-(.*?:/+[^/]*).*', '$1')
             return
                 if (not($repoPath)) then error(QName((), 'INVALID_SVN_PATH'), concat('Path does not address SVN repo: ', $text))
@@ -2048,16 +2040,14 @@ declare function f:parseFoxAxisStep($text as xs:string?, $context as map(*))
         else $nameEtc[2]
         
     let $regex := 
-        if (not($name)) then () else
- 
-        let $raw := concat('^', 
-                    replace(replace(replace(replace($name, '\.', '\\.'), 
-                                                            '\*', '.*', 's'), 
-                                                            '\+', '\\+', 's'),                                                               
-                                                            '\?', '.', 's'), 
-                    '$')
-        let $raw := replace($raw, '[()]', '\\$0')
-        return $raw
+        if (not($name)) then () 
+        else
+            replace($name, '[.\\/\[\]^${}()|]', '\\$0')
+            ! replace(., '(^|[^~])\*', '$1.*')
+            ! replace(., '~\*', '\\*')
+            ! replace(., '(^|[^~])\?', '$1.')
+            ! replace(., '~\?', '\\?')
+            ! concat('^', ., '$')
     return
         if (starts-with($afterName, '[')) then
             (: update context - context is URI (as the current step is a fox axis step) :)
@@ -3668,9 +3658,11 @@ declare function f:skipOperator($text as xs:string, $operator as xs:string?)
  :        the empty sequence if the text does not begin with an
  :        abbreviated name test
  :) 
-declare function f:parseItem_canonicalFoxnameTest($text as xs:string, $FOXSTEP_NAME_DELIM as xs:string)
+declare function f:parseItem_canonicalFoxnameTest($text as xs:string, 
+                                                  $FOXSTEP_NAME_DELIM as xs:string)
         as xs:string* {
         
+    (: do not process unless the first character is a delimiter char :)    
     if (not(starts-with($text, $FOXSTEP_NAME_DELIM))) then () else
     
     let $patternText :=
@@ -3699,6 +3691,7 @@ declare function f:parseItem_canonicalFoxnameTest($text as xs:string, $FOXSTEP_N
                 concat($FOXSTEP_NAME_DELIM, $FOXSTEP_NAME_DELIM),
                 $FOXSTEP_NAME_DELIM
             )
+            ! replace(., '[*?]', '~$0')
             ,
             substring($text, string-length($patternText) + 1)
         )
@@ -3743,46 +3736,30 @@ declare function f:parseItem_abbreviatedFoxnameTest($text as xs:string,
     :)
 
     (: if the text does not start with an unescaped or escaped fox name character ... :)
-(:    
     if (not(matches($text,
             concat(
-            '^(',            '[^ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] |',
-            $FOXSTEP_ESCAPE, '[  ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] )'
-            ), 'sx'))) 
-    then ()
-:)            
-    if (not(matches($text,
-            concat(
-            '^(',            '[^ ', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \d . ] |',
-            $FOXSTEP_ESCAPE, '[  ', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \d . ] )'
+            '^(',            '[^ ', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$<>\[\]{}()=!|,; \d . ] |',
+            $FOXSTEP_ESCAPE, '[  ', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$<>\[\]{}()=!|,; \d . ] )'
             ), 'sx'))) 
     then ()
     
     (: extract the leading fox name test :)            
     else
-(:    
         let $namePattern :=
             replace($text,
                 concat(
                 '^(',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \d . ] )',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \s ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]} \\/ <>()=!|,; \s ] )*', 
-                ' ).*'), '$1', 'sx')
-:)                
-        let $namePattern :=
-            replace($text,
-                concat(
-                '^(',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \d . ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \d . ] )',
-                ' (',               '[^', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \s ] |',
-                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, '\[\]}', $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' <>()=!|,; \s ] )*', 
+                ' (',               '[^', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$<>\[\]{}()=!|,; \d . ] |',
+                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$*?<>\[\]{}()=!|,; \d . ] )',
+                ' (',               '[^', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$<>\[\]{}()=!|,; \s ] |',
+                   $FOXSTEP_ESCAPE, '[ ', $FOXSTEP_ESCAPE, $FOXSTEP_SEPERATOR_REGEX, $NODESTEP_SEPERATOR_REGEX, ' ^$*?<>\[\]{}()=!|,; \s ] )*', 
                 ' ).*'), '$1', 'sx')
         return (
             (: name, after removing escapes :)
-            replace($namePattern, concat($FOXSTEP_ESCAPE, '(.)'), '$1'),
+            replace($namePattern, '~([*?])', '\\$1')             (: replace ~* with \*, ~? with \? :)
+            ! replace(., concat($FOXSTEP_ESCAPE, '(.)'), '$1')   (: remove ~ :)
+            ! replace(., '\\([*?])', '~$1')                      (: replace \* with ~*, \? with ~? :)   
+            ,
             substring($text, string-length($namePattern) + 1) ! replace(., '^\s+', '')
         )
 };        

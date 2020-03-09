@@ -350,3 +350,45 @@ declare function f:foxfunc_in-scope-namespaces-descriptor($item as item())
         as xs:string+ {        
     f:foxfunc_in-scope-namespaces($item) => string-join(', ')
 };    
+
+(:~
+ : Transforms a string by reversing character replacements used by 
+ : the BaseX JSON representation (conversion format 'direct') for 
+ : representing the names of object members.
+ :
+ : @param item a string
+ : @return the result of character replacements reversed
+ :)
+declare function f:foxfunc_unescape-json-name($item as item()) as xs:string { 
+    string-join(
+        analyze-string($item, '_[0-9a-f]{4}')/*/(typeswitch(.)
+        case element(fn:match) return substring(., 2) ! concat('"\u', ., '"') ! parse-json(.)
+        default return replace(., '__', '_')), '')
+};
+
+(:~
+ : Resolves a link to a resource. If $mediatype is specified, the
+ : XML or JSON document is returned, otherwise the document text.
+ :
+ : @param node node containing the link
+ : @param mediatype mediatype expected
+ : @return the resource, either as XDM root node, or as text
+ :)
+declare function f:foxfunc_resolve-link($node as node(), $mediatype as xs:string?)
+        as item()? {
+    let $base := $node/ancestor-or-self::*[1]        
+    let $uri := 
+        if ($base) then resolve-uri($node, $base/base-uri(.))
+        else resolve-uri($node)
+    return
+        if ($mediatype eq 'xml') then
+            if (doc-available($uri)) then doc($uri)
+            else ()
+        else if (not(unparsed-text-available($uri))) then ()
+        else
+            let $text := unparsed-text($uri)
+            return
+                if ($mediatype eq 'json') then try {json:parse($text)} catch * {()}
+                else $text
+};            
+

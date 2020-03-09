@@ -248,7 +248,7 @@ declare function f:resolveStaticFunctionCall($call as element(),
                             
         (: function `html-doc-available` 
            ============================= :)
-        else if ($fname eq 'html-doc-available') then
+        else if ($fname = ('html-doc-available', 'is-html')) then
             let $uri :=
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return ($explicit, $context)[1]
@@ -257,7 +257,7 @@ declare function f:resolveStaticFunctionCall($call as element(),
                             
         (: function `is-dir` 
            ================= :)
-        else if ($fname eq 'is-dir' or $fname eq 'isDir') then
+        else if ($fname = ('is-dir', 'isDir')) then
             let $uri :=
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return
@@ -267,7 +267,7 @@ declare function f:resolveStaticFunctionCall($call as element(),
             
         (: function `is-file` 
            ================== :)
-        else if ($fname eq 'is-file' or $fname eq 'isFile') then
+        else if ($fname = ('is-file', 'isFile')) then
             let $uri := 
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return
@@ -277,7 +277,7 @@ declare function f:resolveStaticFunctionCall($call as element(),
             
         (: function `is-xml` 
            ================ :)
-        else if ($fname eq 'is-xml' or $fname eq 'isXml') then
+        else if ($fname = ('is-xml', 'isXml')) then
             let $uri := 
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return ($explicit, $context)[1]
@@ -299,7 +299,7 @@ declare function f:resolveStaticFunctionCall($call as element(),
                             
         (: function `json-doc` 
            =================== :)
-        else if ($fname eq 'json-doc') then
+        else if ($fname = ('json-doc', 'jdoc')) then
             let $uri := 
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return ($explicit, $context)[1]
@@ -308,13 +308,23 @@ declare function f:resolveStaticFunctionCall($call as element(),
                             
         (: function `json-doc-available` 
            ============================= :)
-        else if ($fname eq 'json-doc-available') then
+        else if ($fname = ('json-doc-available', 'is-json')) then
             let $uri := 
                 let $explicit := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
                 return ($explicit, $context)[1]
             return
                 try {i:fox-json-doc-available($uri, $options)} catch * {false()}
-                            
+
+        (: function `json-name`, `jname` 
+           ============================= :)
+        else if ($fname = ('json-name', 'jname')) then
+            let $node := 
+                let $explicit := $call/*[1] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                return
+                    ($explicit, $context)[1]
+            return
+                f:foxfunc_unescape-json-name($node/local-name(.))
+
         (: function `csv-doc` 
            =================== :)
         else if ($fname eq 'csv-doc') then        
@@ -757,6 +767,25 @@ declare function f:resolveStaticFunctionCall($call as element(),
                 else ()
             return
                 boolean(i:xquery($xpath, map{'':$xpathContextNode})[1])
+    
+        (: function `resolve-link` 
+           ======================= :)
+        else if ($fname eq 'resolve-link') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            let $arg2 := $call/*[2]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)        
+            return
+                f:foxfunc_resolve-link($arg1, $arg2)
+                
+        (: function `unescape-json-name` 
+           ============================= :)
+        else if ($fname = 'unescape-json-name') then
+            let $string := 
+                let $explicit := $call/*[1] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                return
+                    ($explicit, $context)[1]
+            return
+                f:foxfunc_unescape-json-name($string)
+                
                    
         (: function `echo` 
            ==================== :)
@@ -955,6 +984,15 @@ declare function f:resolveStaticFunctionCall($call as element(),
                 if (not(count($arg) eq 1 and $arg[1] instance of node())) then ()
                 else local-name($arg)
 
+        (: function `local-name-from-QName` 
+           ================================ :)
+        else if ($fname eq 'local-name-from-QName') then
+            let $arg := 
+                let $explicit := $call/*[1] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                return ($explicit, $context)[1]
+            return
+                local-name-from-QName($arg)
+
         (: function `lower-case` 
            ===================== :)
         else if ($fname eq 'lower-case') then
@@ -1015,6 +1053,15 @@ declare function f:resolveStaticFunctionCall($call as element(),
                 if (not(count($arg) eq 1 and $arg[1] instance of node())) then ()
                 else namespace-uri($arg)
 
+        (: function `namespace-uri-from-QName` 
+           =================================== :)
+        else if ($fname eq 'namespace-uri-from-QName') then
+            let $arg := 
+                let $explicit := $call/*[1] ! f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+                return ($explicit, $context)[1]
+            return
+                namespace-uri-from-QName($arg)
+
         (: function `node-name` 
            ==================== :)
         else if ($fname eq 'node-name') then
@@ -1069,6 +1116,26 @@ declare function f:resolveStaticFunctionCall($call as element(),
             let $arg := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
             return
                 reverse($arg)
+
+        (: function `resolve-QName` 
+           ======================== :)
+        else if ($fname eq 'resolve-QName') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            let $arg2 := $call/*[2]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            return
+                let $nameContext := if ($arg2) then $arg2 else $context
+                return
+                    resolve-QName($arg1, $nameContext)
+
+        (: function `resolve-uri` 
+           ====================== :)
+        else if ($fname eq 'resolve-uri') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            let $arg2 := $call/*[2]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)
+            return
+                let $baseUri := if ($arg2) then $arg2 else $context
+                return
+                    resolve-uri($arg1, $baseUri)
 
         (: function `root` 
            ===================== :)
@@ -1210,6 +1277,20 @@ declare function f:resolveStaticFunctionCall($call as element(),
             return
                 year-from-date($arg)
                 
+        (: function `xs:date` 
+           ===================== :)
+        else if ($fname eq 'xs:date') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)          
+            return
+                xs:date($arg1)
+                
+        (: function `xs:dateTime` 
+           ===================== :)
+        else if ($fname eq 'xs:date') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)          
+            return
+                xs:dateTime($arg1)
+                
         (: function `xs:decimal` 
            ===================== :)
         else if ($fname eq 'xs:decimal') then
@@ -1223,6 +1304,13 @@ declare function f:resolveStaticFunctionCall($call as element(),
             let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)          
             return
                 xs:integer($arg1)
+                
+        (: function `xs:string` 
+           ===================== :)
+        else if ($fname eq 'xs:string') then
+            let $arg1 := $call/*[1]/f:resolveFoxpathRC(., false(), $context, $position, $last, $vars, $options)          
+            return
+                xs:string($arg1)
                 
         else
         error(QName((), 'NOT_YET_IMPLEMENTED'),
