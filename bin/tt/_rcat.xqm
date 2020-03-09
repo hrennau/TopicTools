@@ -141,7 +141,8 @@ declare function m:resolveRcat($rcat as node()?, $pquery as xs:string?)
  :)
 declare function m:rcatFromFoxpath($foxpath as xs:string)
         as element(rcat) {
-    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())    
+    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())  
+    (: turn into absolute URIs :)
     let $selFiles := $selFiles ! file:path-to-native(.)    
     return
         if ($selFiles instance of element(errors)) then
@@ -195,13 +196,15 @@ declare function m:rcatFromFoxpath($foxpath as xs:string)
             attribute csv.toRec {($properties/@toRec, '0')[1]}
         ) else ()
 
-    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())        
+    let $selFiles := tt:resolveFoxpath($foxpath, map:entry('IS_CONTEXT_URI', true()), ())   
     return
         if ($selFiles instance of element(errors)) then
             tt:wrapErrors(
                 tt:createError('INVALID_FOXPATH_EXPR', concat('Expression text: ', $foxpath))
             )
-        else 
+        else
+            (: turn into absolute URIs :)
+            let $selFiles := $selFiles ! file:path-to-native(.)        
             let $baseURI := file:current-dir() ! replace(., '\\', '/')
             return
                 <rcat foxpath="{$foxpath}" 
