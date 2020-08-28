@@ -394,7 +394,7 @@ declare function m:_resolveRcat_xtext($rcat as node()?)
  : @return the xml-csv documents
  :)
 declare function m:_resolveRcat_xcsv($rcat as node()?)
-        as element()* { 
+        as node()* { 
     let $rcat := $rcat/descendant-or-self::*[1]   
     return if ($rcat/self::z:errors) then $rcat else
     
@@ -420,7 +420,7 @@ declare function m:_resolveRcat_xcsv($rcat as node()?)
  : @return the xml-csv documents
  :)
 declare function m:_resolveRcat_jsonx($rcat as node()?)
-        as element()* { 
+        as node()* { 
     let $rcat := $rcat/descendant-or-self::*[1]   
     return if ($rcat/self::z:errors) then $rcat else
     
@@ -429,11 +429,11 @@ declare function m:_resolveRcat_jsonx($rcat as node()?)
     for $uri in $rcat//@href
     let $text := try {tt:unparsed-text($uri)} catch * {()}
     let $docRaw :=
-        try {json:parse($text)/*} catch *  {()}
+        try {json:parse($text)} catch *  {()}
     let $doc :=
         if (not($docRaw)) then () else
         copy $docRaw_ := $docRaw
-        modify insert node attribute xml:base {$uri} into $docRaw_
+        modify insert node attribute xml:base {$uri} into $docRaw_/*
         return $docRaw_
     return $doc       
         

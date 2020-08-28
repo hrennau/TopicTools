@@ -70,10 +70,13 @@ declare function m:_checkFacets($context as element(context)?,
     let $errors := (            
         (: *** check @minDocCount, @maxDocCount, @docCount :)
         if (not($paramConfig/(@fct_minDocCount, @fct_maxDocCount, @fct_docCount))) then () else
+        let $format := $itemValue/@format        
         let $minCount := $paramConfig/@fct_minDocCount/xs:integer(.)
         let $maxCount := $paramConfig/@fct_maxDocCount/xs:integer(.)
         let $count := $paramConfig/@fct_docCount/xs:integer(.)
-        let $actCount := count($itemValue/*/@href[doc-available(.)])
+        let $actCount := count($itemValue/*/@href[
+            if ($format eq 'json') then exists( try{json:doc(.)} catch * {()})
+            else doc-available(.)])
         let $actFileCount := count($itemValue/*)
         return
             if ($actCount lt $minCount) then

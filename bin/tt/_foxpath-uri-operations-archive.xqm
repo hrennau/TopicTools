@@ -21,6 +21,8 @@ import module namespace i="http://www.ttools.org/xquery-functions" at
     "_foxpath-processorDependent.xqm",
     "_foxpath-util.xqm";
 
+declare namespace fox="http://www.foxpath.org/ns/annotations";
+
 (: 
  : ===============================================================================
  :
@@ -61,6 +63,8 @@ import module namespace i="http://www.ttools.org/xquery-functions" at
                                         $archivePath as xs:string?, 
                                         $options as map(*)?)
         as xs:boolean { 
+    if (not($archivePath)) then true() else
+    
     let $entries := archive:entries($archive)
     return
         if ($entries = $archivePath) then false()
@@ -142,13 +146,31 @@ import module namespace i="http://www.ttools.org/xquery-functions" at
  : @param options options controlling the evaluation
  : @return the document node, if the resource exists and is a well-formed XML document
  :)
- declare function f:fox-doc_archive($archive as xs:base64Binary, 
+ declare function f:fox-doc_archive($uri as xs:string,
+                                    $archive as xs:base64Binary, 
                                     $archivePath as xs:string?, 
                                     $options as map(*)?)
         as document-node()? {    
     let $text := f:fox-unparsed-text_archive($archive, $archivePath, (), $options)
     return    
-        try {$text ! parse-xml(.)} catch * {()}
+        let $doc := try {$text ! parse-xml(.)} catch * {()}
+        return
+            if (not($doc)) then () 
+            else 
+                (: Check if must add @xml:base :)
+                let $addXmlBase := 
+                    if (empty($options)) then false()
+                    else $options?addXmlBase
+                return
+                    if (not($addXmlBase)) then $doc
+                    else
+                        (: Add @xml:base :)
+                        copy $doc_ := $doc
+                        modify (
+                            insert node attribute xml:base {$uri ! file:path-to-uri(.)} into $doc_/*,
+                            insert node attribute fox:base-added {true()} into $doc_/*
+                        )
+                        return $doc_
 };
 
 (:~
@@ -213,6 +235,25 @@ declare function f:fox-unparsed-text-lines_archive($archive as xs:base64Binary,
     let $text := f:fox-unparsed-text_archive($archive, $archivePath, $encoding, $options)
     return
         $text ! tokenize(., '&#xD;?&#xA;')
+};
+
+(:~
+ : Returns an XML representation of the JSON record  contained by an archive.
+ :
+ : @param archive an archive file
+ : @param archivePath a within-archive data path (e.g. a/b/c)
+ : @param encoding the encoding of the file to be retrieved
+ : @param options options controlling the evaluation
+ : @return the document, or the empty sequence if retrieval or parsing fails
+ :)
+declare function f:fox-json-doc_archive($archive as xs:base64Binary, 
+                                        $archivePath as xs:string?, 
+                                        $encoding as xs:string?,
+                                        $options as map(*)?)
+        as document-node() {                                             
+    let $text := f:fox-unparsed-text_archive($archive, $archivePath, $encoding, $options)
+    return
+        try {$text ! json:parse(.)} catch * {()}
 };
 
 (:~
@@ -281,7 +322,7 @@ declare function f:childUriCollection_archive($archive as xs:base64Binary,
                 return
                     if ($kindFilter eq 'dir') then $folderChildren
                     else ($fileChildren, $folderChildren)
-        ) [string()]
+        ) [string()] => distinct-values()   
     let $matchName :=
         if (not($pattern)) then $children else
             $children[matches(replace(replace(., '/$', ''), '.*/', ''), $pattern, 'i')]
@@ -317,9 +358,12 @@ declare function f:descendantUriCollection_archive(
             concat('^', replace(replace($name, '\*', '.*'), '\?', '.'), '$')
 
     let $entries := archive:entries($archive) ! string()    
-    let $relPaths := 
-        if (not($archivePath)) then $entries else 
-            $entries ! substring(., 2 + string-length($archivePath))   
+    let $relPaths :=
+        if (not($archivePath)) then $entries 
+        else
+            let $prefix := $archivePath || '/'
+            return            
+                $entries[starts-with(., $prefix)] ! substring(., 2 + string-length($archivePath)) 
         
     let $files := distinct-values($relPaths)
     let $matchKind :=

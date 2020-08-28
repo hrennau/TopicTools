@@ -317,23 +317,22 @@ declare function f:uriDomain($uri as xs:string, $options as map(*)?)
     let $uriDomain := f:uriDomain($uri, $options)
     return
     
-    if ($uriDomain eq 'FILE_SYSTEM') then 
-        file:exists($uri)
-    else if ($uriDomain eq 'BASEX') then 
-        f:fox-file-exists_basex($uri, $options)   
-    else if ($uriDomain eq 'SVN') then 
-        f:fox-file-exists_svn($uri, $options)
-    else if ($uriDomain eq 'RDF') then 
-        f:fox-file-exists_rdf($uri, $options)
+    if ($uriDomain eq 'FILE_SYSTEM') then file:exists($uri)
+    else if ($uriDomain eq 'BASEX') then f:fox-file-exists_basex($uri, $options)   
+    else if ($uriDomain eq 'SVN') then f:fox-file-exists_svn($uri, $options)
+    else if ($uriDomain eq 'RDF') then f:fox-file-exists_rdf($uri, $options)
     else if ($uriDomain eq 'ARCHIVE') then
         let $archiveURIAndPath := f:parseArchiveURI($uri, $options)
         let $archiveURI := $archiveURIAndPath[1]
         let $archivePath := $archiveURIAndPath[2]
-        let $archive := f:fox-binary($archiveURI, $options)
         return
-            if (empty($archive)) then false()
+            if (not($archivePath)) then true()   (: Archive root folder :)
             else
-                f:fox-file-exists_archive($archive, $archivePath, $options)       
+                let $archive := f:fox-binary($archiveURI, $options)
+                return
+                    if (empty($archive)) then false()
+                    else
+                        f:fox-file-exists_archive($archive, $archivePath, $options)       
     else 
         true()
 };
@@ -369,8 +368,7 @@ declare function f:fox-doc($uri as xs:string, $options as map(*)?)
         let $archive := f:fox-binary($archiveURI, $options)
         return
             if (empty($archive)) then ()
-            else
-                f:fox-doc_archive($archive, $archivePath, $options)
+            else f:fox-doc_archive($uri, $archive, $archivePath, $options)
 (:                
     else if ($uriDomain eq 'REDIRECTING_URI_TREE') then 
         let $text := f:fox-navURI-to-text_github($uri, (), $options)
@@ -539,7 +537,7 @@ declare function f:fox-file-lines($uri as xs:string,
 declare function f:fox-csv-doc($uri as xs:string,
                                $options as map(*)?)
         as document-node()? {
-    f:fox-csv-doc($uri, 'comma', 'no', 'direct', 'yes', $options)        
+    f:fox-csv-doc($uri, 'comma', 'no', 'direct', 'yes', 'no', $options)        
 };
 
 (:~
@@ -555,7 +553,7 @@ declare function f:fox-csv-doc($uri as xs:string,
                                $separator as xs:string,
                                $options as map(*)?)
         as document-node()? {
-    f:fox-csv-doc($uri, $separator, 'no', 'direct', 'yes', $options)        
+    f:fox-csv-doc($uri, $separator, 'no', 'direct', 'yes', 'no', $options)        
 };
 
 (:~
@@ -572,7 +570,7 @@ declare function f:fox-csv-doc($uri as xs:string,
                                $withHeader as xs:string,
                                $options as map(*)?)
         as document-node()? {
-    f:fox-csv-doc($uri, $separator, $withHeader, 'direct', 'yes', $options)        
+    f:fox-csv-doc($uri, $separator, $withHeader, 'direct', 'yes', 'no', $options)        
 };
 
 (:~
@@ -593,7 +591,7 @@ declare function f:fox-csv-doc($uri as xs:string,
                                $names as xs:string,
                                $options as map(*)?)
         as document-node()? {
-    f:fox-csv-doc($uri, $separator, $withHeader, $names, 'yes', $options)        
+    f:fox-csv-doc($uri, $separator, $withHeader, $names, 'yes', 'no', $options)        
 };
 (:~
  : Returns an XML representation of the CSV record identified by URI or file path.
@@ -613,6 +611,7 @@ declare function f:fox-csv-doc($uri as xs:string,
                                $withHeader as xs:string,
                                $names as xs:string,
                                $quotes as xs:string,
+                               $backslashes as xs:string,
                                $options as map(*)?)
         as document-node()? {
     let $uriDomain := f:uriDomain($uri, $options)
@@ -621,7 +620,8 @@ declare function f:fox-csv-doc($uri as xs:string,
         'separator': $separator,
         'header': $withHeader,
         'format': $names,
-        'quotes': $quotes
+        'quotes': $quotes,
+        'backslashes': $backslashes
     }
     return
 
@@ -631,10 +631,10 @@ declare function f:fox-csv-doc($uri as xs:string,
             try {$text ! csv:parse(., $csvOptions)} catch * {()}  
     else if ($uriDomain eq 'RDF') then        
         let $accessURI := f:fox-get-access-uri_rdf($uri, $options)
-        return $accessURI ! f:fox-csv-doc(., $separator, $withHeader, $names, $quotes, $options)       
+        return $accessURI ! f:fox-csv-doc(., $separator, $withHeader, $names, $quotes, $backslashes, $options)       
     else if ($uriDomain eq 'UTREE') then
         let $accessURI := f:fox-get-access-uri_utree($uri, $options)
-        return $accessURI ! f:fox-csv-doc(., $separator, $withHeader, $names, $quotes, $options)
+        return $accessURI ! f:fox-csv-doc(., $separator, $withHeader, $names, $quotes, $backslashes, $options)
     else if ($uriDomain eq 'GITHUB') then
         error(QName((), 'NOT_YET_IMPLEMENTED'), 'Not yet implemented: csv@github') (: f:fox-json-doc_github($uri, $options) :)
     else 
@@ -668,8 +668,26 @@ declare function f:fox-json-doc($uri as xs:string,
         return $accessURI ! f:fox-json-doc(., $options)
     else if ($uriDomain eq 'GITHUB') then
         f:fox-json-doc_github($uri, $options)
+    else if ($uriDomain eq 'ARCHIVE') then
+            let $archiveURIAndPath := f:parseArchiveURI($uri, $options)
+            let $archiveURI := $archiveURIAndPath[1]
+            let $archivePath := $archiveURIAndPath[2]
+            let $archive := f:fox-binary($archiveURI, $options)
+            return
+                if (empty($archive)) then ()
+                else
+                    f:fox-json-doc_archive($archive, $archivePath, (), $options)
+                    (:
+                    let $text := trace(f:fox-unparsed-text_archive($archive, $archivePath, (), $options) , '_TEXT: ')
+                    return try {$text ! json:parse(.)} catch * {()}
+                    :)
     else 
-        try {unparsed-text($uri) ! json:parse(.)} catch * {()}
+        let $jdoc := function-lookup(QName('http://basex.org/modules/json', 'doc'), 1)
+        return
+            try {
+                if (exists($jdoc)) then $jdoc($uri) else
+                    unparsed-text($uri) ! json:parse(.)
+            } catch * {()}        
 };
 
 (:~
@@ -742,6 +760,75 @@ declare function f:fox-binary($uri as xs:string,
  :)
 
 (:~
+ : Returns a given URI, if it matches an optional regex.
+ :
+ : @param uri the URI to be evaluated
+ : @param nameRegex an optional regex constraining the URI name
+ : @return the URI, or the empty sequence if the URI does not
+ :   match the regex
+ :)
+declare function f:selfUri($uri as xs:string, $nameRegex as xs:string?) 
+        as xs:string? {
+    $uri
+    [not($nameRegex) or matches(replace(., '.*/', ''), $nameRegex, 'i')]
+};
+
+(:~
+ : Returns the parent URI of a given URI, with a name matching the
+ : optional regex.
+ :
+ : @param uri the URI for which the ancestors are sought
+ : @param nameRegex an optional regex constraining the URI names
+ : @return the parent URI, or the empty sequence if the URI does not
+ :   match the regex
+ :)
+declare function f:parentUri($uri as xs:string, $nameRegex as xs:string?) 
+        as xs:string? {
+    let $raw := replace($uri, '/[^/]*$', '')[string()]
+                [not($nameRegex) or matches(replace(., '.*/', ''), $nameRegex, 'i')]
+    return
+        if (matches($raw, '^.:$')) then concat($raw, '/') else $raw
+
+};
+
+(:~
+ : Returns the ancestor URIs of a given URI, with a name matching the
+ : optional regex. If $orSelf is true, also the given URI itself is
+ : returned, provided it matches the regex. The URIs are returned
+ : in reverse document order.
+ :
+ : @param uri the URI for which the ancestors are sought
+ : @param nameRegex an optional regex constraining the URI names
+ : @param orSelf if true, also the given URI itself is considered
+ : @retrun the ancestor URI, or ancestor-or-self URIs, in reverese document order
+ :)
+declare function f:ancestorUriCollection($uri as xs:string,
+                                         $nameRegex as xs:string?,
+                                         $orSelf as xs:boolean?)
+        as xs:string* {
+    let $items := tokenize($uri, '/')
+    let $root := concat(head($items), '/')            
+    let $steps := tail($items)[position() lt last()]
+    let $ancestorsIndices :=
+        for $pos in 1 to count($steps)
+        where not($nameRegex) or matches($steps[$pos], $nameRegex, 'i')
+        return $pos
+    let $ancestors := (
+        $root[not($nameRegex) or $nameRegex eq '^.*$'], 
+        (: the root folder is only considered if there is no, or a wildcard, name test :)
+        for $ai in $ancestorsIndices
+        return
+            concat($root, string-join(for $index in 1 to $ai return $steps[$index], '/'))
+    )
+    let $uris := (
+         if (not($orSelf)) then () else
+            $uri[not($nameRegex) or matches(replace(., '.*/', ''), $nameRegex, 'i')],
+         $ancestors
+    )
+    return $uris                    
+};
+        
+(:~
  : Returns the child URIs of a given URI, matching an optional name pattern
  : and matching an optional kind test (file or folder).
  :
@@ -779,6 +866,7 @@ declare function f:childUriCollection($uri as xs:string,
         else
         
     let $kindFilter := $stepDescriptor/@kindFilter
+    let $name := ($name, '*')[1]
     let $ignKindTest :=        
         try {file:list($uri, false(), $name)           
             ! replace(., '\\', '/')
@@ -834,6 +922,7 @@ declare function f:descendantUriCollection($uri as xs:string,
         else
         
     let $kindFilter := $stepDescriptor/@kindFilter
+    let $name := ($name, '*')[1]    
     let $ignKindTest :=
         try {
             file:list($uri, true(), $name)           
