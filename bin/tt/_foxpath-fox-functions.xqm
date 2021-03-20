@@ -1,179 +1,344 @@
-module namespace f="http://www.ttools.org/xquery-functions";
-import module namespace i="http://www.ttools.org/xquery-functions" at 
-    "_foxpath-processorDependent.xqm",
-    "_foxpath-uri-operations.xqm",
-    "_foxpath-util.xqm";
+module namespace f="http://www.foxpath.org/ns/fox-functions";
+import module namespace i="http://www.ttools.org/xquery-functions" 
+at "_foxpath-processorDependent.xqm",
+   "_foxpath-uri-operations.xqm";
+
+import module namespace util="http://www.ttools.org/xquery-functions/util" 
+at  "_foxpath-util.xqm";
 
 (:~
- : Foxpath function `bslash#1'. Edits a text, replacing forward slashes by 
- : back slashes.
+ : Returns for given items all descendants and their attributes. Atomic
+ : items are ignored.
+ :
+ : @param a sequence of items
+ : @return descendant nodes and their attributes
+ :) 
+declare function f:allDescendants($items as item()*)
+        as node()* {
+    $items[. instance of node()]//(@*, *)        
+};        
+
+(:~
+ : Returns the attribute names of a node. If $separator is specified, the sorted
+ : names are concatenated, using this separator, otherwise the names are returned
+ : as a sequence. If $localNames is true, the local names are returned, otherwise 
+ : the lexical names. 
+ : 
+ : When using $namePattern, only those child elements are considered which have
+ : a local name matching the pattern.
+ :
+ : Example: .../foo/att-names(., ', ', false(), '*put')
+ : Example: .../foo/att-names(., ', ', false(), 'input|output') 
+ :
+ : @param nodes a sequence of nodes (only element nodes contribute to the result)
+ : @param separator if used, the names are concatenated, using this separator
+ : @param localNames if true, the local names are returned, otherwise the lexical names 
+ : @param namePattern an optional name pattern filtering the attributes to be considered 
+ : @return the names as a sequence, or as a concatenated string
+ :)
+declare function f:attNamesOld($nodes as node()*, 
+                            $concat as xs:boolean?, 
+                            $nameKind as xs:string?,   (: name | lname | jname :)
+                            $namePatterns as xs:string*,
+                            $excludedNamePatterns as xs:string*)
+        as xs:string* {
+    let $nameRegexes := $namePatterns 
+       ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+       ! concat('^', ., '$')        
+    let $excludedNameRegexes := $excludedNamePatterns 
+       ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+       ! concat('^', ., '$')    
+       
+    for $node in $nodes       
+    let $items := $node/@*
+       [empty($nameRegexes) or 
+            (some $r in $nameRegexes satisfies matches(local-name(.), $r, 'i'))]
+       [empty($excludedNameRegexes) or 
+            not(some $r in $excludedNameRegexes satisfies matches(local-name(.), $r, 'i'))]
+    let $separator := ', '[$concat]
+    let $names := 
+        if ($nameKind eq 'lname') then 
+            ($items/local-name(.)) => distinct-values() => sort()
+        else if ($nameKind eq 'jname') then 
+            ($items/f:unescape-json-name(local-name(.))) => distinct-values() => sort()
+        else ($items/name(.)) => distinct-values() => sort()
+    return
+        if (exists($separator)) then string-join($names, $separator)
+        else $names
+};        
+
+declare function f:attNames($nodes as node()*, 
+                            $concat as xs:boolean?, 
+                            $nameKind as xs:string?,   (: name | lname | jname :)
+                            $nameFilter as xs:string?,
+                            $nameFilterExclude as xs:string?)
+        as xs:string* {
+    let $cnameFilter := util:compileNameFilter($nameFilter, true())        
+    let $cnameFilterExclude := util:compileNameFilter($nameFilterExclude, true())
+       
+    for $node in $nodes       
+    let $items := $node/@*
+       [empty($cnameFilter) or util:matchesNameFilter(local-name(.), $cnameFilter)]
+       [empty($cnameFilterExclude) or not(util:matchesNameFilter(local-name(.), $cnameFilterExclude))] 
+    let $separator := ', '[$concat]
+    let $names := 
+        if ($nameKind eq 'lname') then 
+            ($items/local-name(.)) => distinct-values() => sort()
+        else if ($nameKind eq 'jname') then 
+            ($items/f:unescape-json-name(local-name(.))) => distinct-values() => sort()
+        else ($items/name(.)) => distinct-values() => sort()
+    return
+        if (exists($separator)) then string-join($names, $separator)
+        else $names
+};        
+
+declare function f:baseUriDirectory($item as item())
+        as xs:string {
+    (if ($item instance of node()) then $item else i:fox-doc($item, ()))
+    ! base-uri(.) ! replace(., '.*[/\\](.*)[/\\][^/\\]*$', '$1')
+};
+
+declare function f:baseUriFileName($item as item())
+        as xs:string {
+    (if ($item instance of node()) then $item else i:fox-doc($item, ()))
+    ! base-uri(.) ! file:name(.)
+};
+
+(:~
+ : Edits a text, replacing forward slashes by back slashes.
  :
  : @param arg text to be edited
  : @return edited text
  :)
-declare function f:foxfunc_bslash($arg as xs:string?)
+declare function f:bslash($arg as xs:string?)
         as xs:string? {
     replace($arg, '/', '\\')        
 };      
 
 (:~
- : Foxpath function `file-content#1'. Edits a text, replacing forward slashes by 
- : back slashes.
+ : Returns true if all items have deep-equal content. When comparing  the items,
+ : only their content is considered, not their name. Thus elements with different
+ : names can have deep-equal content.
  :
- : @param arg text to be edited
- : @return edited text
+ : @param items the items to be checked
+ : @return false if there is a pair of items which do not have deep-equal content, true otherwise
  :)
-declare function f:foxfunc_file-content($uri as xs:string?, 
-                                        $encoding as xs:string?,
-                                        $options as map(*)?)
+declare function f:content-deep-equal($items as item()*)
+        as xs:boolean? {
+    let $docs :=
+        for $item in $items return
+            if ($item instance of node()) then $item
+            else i:fox-doc($item, ())
+    let $count := count($docs)
+    return if ($count le 1) then true() else
+    
+    every $i in 1 to $count - 1 satisfies
+        let $item1 := $docs[$i]
+        let $item2 := $docs[$i + 1]
+        let $atts1 := for $a in $item1/@* order by local-name($a), namespace-uri($a), string($a) return $a
+        let $atts2 := for $a in $item2/@* order by local-name($a), namespace-uri($a), string($a) return $a
+        return
+            deep-equal($atts1, $atts2) and deep-equal($item1/node(), $item2/node())
+};      
+
+(:~
+ : Returns the text content of a file resource.
+ :
+ : @param uri the file URI
+ : @param encoding an encoding
+ : @param options for future use
+ : @return the text content
+ :)
+declare function f:file-content($uri as xs:string?, 
+                                $encoding as xs:string?,
+                                $options as map(*)?)
         as xs:string? {
-    let $redirectedRetrieval := f:fox-unparsed-text_github($uri, $encoding, $options)
+    let $redirectedRetrieval := i:fox-unparsed-text_github($uri, $encoding, $options)
     return
         if ($redirectedRetrieval) then $redirectedRetrieval
         else i:fox-unparsed-text($uri, $encoding, $options)
 };      
 
 (:~
- : Returns the child URIs of a given URI, provided their name matches
- : a given name, or a regex derived from it. If $fromSubstring and 
- : $toSubstring are supplied, the URI names must match the regex 
- : obtained by replacing in $name substring $fromSubstring with 
- : $toSubstring.
+ : Returns for a set of URIs the child URIs with a file name (final step) 
+ : matching a name or name pattern from $names, and not matching a name or 
+ : name pattern from $namesExcluded. 
  :
- : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return child URIs matching the name or the derived regex
+ : If $fromSubstring and $toSubstring are supplied, the file name must match the 
+ : regex obtained by replacing in $name substring $fromSubstring with $toSubstring.
+ :
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected child URIs
  :)
-declare function f:foxfunc_fox-child($context as xs:string,
-                                     $name as xs:string,
-                                     $fromSubstring as xs:string?,
-                                     $toSubstring as xs:string?)
+declare function f:foxChild($context as xs:string*,
+                            $names as xs:string?,
+                            $namesExcluded as xs:string?)
         as xs:string* {
+    let $cnameFilter := util:compileNameFilter($names, true())        
+    let $cnameFilterExclude := util:compileNameFilter($namesExcluded, true())    
+    return
+        for $c in $context return
+            i:childUriCollection($c, (), (), ()) 
+            [not($names) or util:matchesNameFilter(., $cnameFilter)]
+            [not($namesExcluded) or not(util:matchesNameFilter(., $cnameFilterExclude))]
+            ! concat($c, '/', .)
+            
+(: _TO_DO_ - remove: $fromSubstring, $toSubstring ---    
+    (
     if (not($fromSubstring) or not($toSubstring)) then 
-        f:childUriCollection($context, $name, (), ()) ! concat($context, '/', .) 
+        $names ! i:childUriCollection($context, ., (), ()) ! concat($context, '/', .) 
     else 
+        for $name in $names
         let $regex := replace($name, $fromSubstring, $toSubstring, 'i') !
                       concat('^', ., '$')
         return
-            for $child in f:childUriCollection($context, (), (), ())
+            for $child in i:childUriCollection($context, (), (), ())
             let $cname := replace($child, '.*/', '')
             where matches($cname, $regex, 'i')
-            return concat($context, '/', $child)        
+            return concat($context, '/', $child)
+    ) => distinct-values()
+ :)    
 };
 
 (:~
- : Returns the parent URIs of a given URI, provided its name matches
- : a given name, or a regex derived from it. If $fromSubstring and 
- : $toSubstring are supplied, the parent URI name must match the regex 
- : obtained by replacing in $name substring $fromSubstring with 
- : $toSubstring.
+ : Returns the child elements of input nodes with a JSON name equal to
+ : one of a set of input names. The JSON name is the name obtained by
+ : decoding the element name as a JSON key.
  :
  : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return the parent URI, if it matches the name or the derived regex
+ : @param names one or several name patterns
+ : @return child elements with a matching JSON name
  :)
-declare function f:foxfunc_fox-parent($context as xs:string,
-                                      $name as xs:string,
-                                      $fromSubstring as xs:string?,
-                                      $toSubstring as xs:string?)
-        as xs:string? {
-    let $regex :=
-        if (not($fromSubstring) or not($toSubstring)) then 
-            replace($name, '\*', '.*') !
-            replace(., '\?', '.') !
-            concat('^', ., '$')
-        else
-            replace($name, $fromSubstring, $toSubstring, 'i') !
-            concat('^', ., '$')
-    let $uri := f:parentUri($context, $regex) 
-    return $uri
-};
-
-(:~
- : Returns a given URI, provided its name matches a given name, or a 
- : regex derived from it. If $fromSubstring and $toSubstring are 
- : supplied, the URI name must match the regex obtained by replacing 
- : in $name substring $fromSubstring with $toSubstring.
- :
- : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return child URIs matching the name of the derived regex
- :)
-declare function f:foxfunc_fox-self($context as xs:string,
-                                    $name as xs:string,
-                                    $fromSubstring as xs:string?,
-                                    $toSubstring as xs:string?)
-        as xs:string? {
-    let $regex :=
-        if (not($fromSubstring) or not($toSubstring)) then 
-            replace($name, '\*', '.*') !
-            replace(., '\?', '.') !
-            concat('^', ., '$')
-        else
-            replace($name, $fromSubstring, $toSubstring, 'i') !
-            concat('^', ., '$')
-    let $uri := f:selfUri($context, $regex) 
-    return $uri
-};
-
-(:~
- : Returns the descendant URIs of a given URI, provided their name matches
- : a given name, or a regex derived from it. If $fromSubstring and 
- : $toSubstring are supplied, the URI names must match the regex 
- : obtained by replacing in $name substring $fromSubstring with 
- : $toSubstring.
- :
- : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return descendant URIs matching the name or the derived regex
- :)
-declare function f:foxfunc_fox-descendant($context as xs:string,
-                                          $name as xs:string,
-                                          $fromSubstring as xs:string?,
-                                          $toSubstring as xs:string?)
-        as xs:string* {
-    if (not($fromSubstring) or not($toSubstring)) then 
-        f:descendantUriCollection($context, $name, (), ()) ! concat($context, '/', .) 
-    else 
-        let $regex := replace($name, $fromSubstring, $toSubstring, 'i') !
-                      concat('^', ., '$')        
+declare function f:jchild($context as node()*,
+                          $names as xs:string+)
+        as item()* {
+    let $flags := '' return
+    
+    if (every $name in $names satisfies not(matches($name, '[*?]'))) then        
+        $context/*[convert:decode-key(local-name()) = $names]
+    else
+        let $namesRX := 
+            $names 
+            ! replace(., '\*', '.*') 
+            ! replace(., '\?', '.') 
+            ! concat('^', ., '$')
         return
-            for $child in f:descendantUriCollection($context, (), (), ())
-            let $cname := replace($child, '.*/', '')
-            where matches($cname, $regex, 'i')
-            return concat($context, '/', $child)        
+            $context/*[
+                let $jname := convert:decode-key(local-name())
+                return some $rx in $namesRX satisfies matches($jname, $rx, $flags)
+            ]                
 };
 
 (:~
- : Returns the descendant-or-self URIs of a given URI, provided their name 
- : matches a given name, or a regex derived from it. If $fromSubstring and 
- : $toSubstring are supplied, the URI names must match the regex obtained
- : obtained by replacing in $name substring $fromSubstring with $toSubstring.
+ : Returns the child elements of input nodes with a JSON name equal to
+ : one of a set of input names. The JSON name is the name obtained by
+ : decoding the element name as a JSON key.
  :
  : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return descendant-or-self URIs matching the name or the derived regex
+ : @param names one or several name patterns
+ : @return child elements with a matching JSON name
  :)
-declare function f:foxfunc_fox-descendant-or-self($context as xs:string,
-                                                  $name as xs:string,
-                                                  $fromSubstring as xs:string?,
-                                                  $toSubstring as xs:string?)
+declare function f:jchildren($context as node()*,
+                             $nameFilter as xs:string?,
+                             $ignoreCase as xs:boolean?)
+        as item()* {
+    let $cnameFilter := util:compileNameFilter($nameFilter, $ignoreCase)        
+    return $context/*[convert:decode-key(local-name()) ! util:matchesNameFilter(., $cnameFilter)]
+};
+
+(:~
+ : Returns for a set of URIs the parent URIs with a file name (final step) 
+ : matching a name or name pattern from $names, and not matching a name or 
+ : name pattern from $namesExcluded. 
+ :
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected parent URIs
+:)
+declare function f:foxParent($context as xs:string,
+                             $names as xs:string?,
+                             $namesExcluded as xs:string?)
+        as xs:string? {
+    let $cnameFilter := util:compileNameFilter($names, true())        
+    let $cnameFilterExclude := util:compileNameFilter($namesExcluded, true())    
+    return
+        for $c in $context return
+            i:parentUri($c, ()) 
+            [not($names) or util:matchesNameFilter(., $cnameFilter)]
+            [not($namesExcluded) or not(util:matchesNameFilter(., $cnameFilterExclude))]
+};
+
+(:~
+ : Filters a set of URIs, returning those URIs with a file name (final step) matching a 
+ : name or name pattern from $names, and not matching a name or name pattern from 
+ : $namesExcluded. 
+ :
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected descendant or self URIs
+ :)
+declare function f:foxSelf($context as xs:string*,
+                           $names as xs:string?,
+                           $namesExcluded as xs:string?)
         as xs:string* {
-    let $descendantUris := f:foxfunc_fox-descendant($context, $name, $fromSubstring, $toSubstring)
+    let $cnameFilter := util:compileNameFilter($names, true())        
+    let $cnameFilterExclude := util:compileNameFilter($namesExcluded, true())    
+    return
+        $context
+        [not($names) or file:name(.) ! util:matchesNameFilter(., $cnameFilter)]
+        [not($namesExcluded) or file:name(.) ! not(util:matchesNameFilter(., $cnameFilterExclude))]
+        => distinct-values()        
+};
+
+(:~
+ : Returns for a set of URIs the descendant URIs with a file name (final step) 
+ : matching a name or name pattern from $names, and not matching a name or name 
+ : pattern from $namesExcluded. 
+ :
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected child URIs
+ :)
+declare function f:foxDescendant(
+                         $context as xs:string*,
+                         $names as xs:string?,
+                         $namesExcluded as xs:string?)
+        as xs:string* {
+    let $cnameFilter := util:compileNameFilter($names, true())        
+    let $cnameFilterExclude := util:compileNameFilter($namesExcluded, true())
     return (
-        f:foxfunc_fox-self($context, $name, $fromSubstring, $toSubstring),
-        $descendantUris
-    )
+        for $c in $context 
+            return i:descendantUriCollection($c, (), (), ()) 
+                   [not($names) or file:name(.) ! util:matchesNameFilter(., $cnameFilter)]
+                   [not($namesExcluded) or file:name(.) ! not(util:matchesNameFilter(., $cnameFilterExclude))]
+                   ! concat($c, '/', .)
+    ) => distinct-values()
+};
+
+(:~
+ : Returns for a set of URIs the descendant or self URIs with a file name 
+ : (final step) matching a name or name pattern from $names, and not matching 
+ : a name or name pattern from $namesExcluded. 
+ :
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected descendant or self URIs
+ :)
+declare function f:foxDescendantOrSelf(
+                             $context as xs:string*,
+                             $names as xs:string?,
+                             $namesExcluded as xs:string?)
+        as xs:string* {
+    (
+        f:foxDescendant($context, $names, $namesExcluded),
+        f:foxSelf($context, $names, $namesExcluded)
+    ) => distinct-values() => sort()
 };
 
 (:~
@@ -183,19 +348,22 @@ declare function f:foxfunc_fox-descendant-or-self($context as xs:string,
  : in $name substring $fromSubstring with $toSubstring.
  :
  : @param context the context URI
- : @param name a name pattern
+ : @param names one or several name patterns
  : @param fromSubstring used to map $name to a regex
  : @param toSubstring used to map $name to a regex
  : @return sibling URIs matching the name or the derived regex
  :)
-declare function f:foxfunc_fox-sibling($context as xs:string,
-                                       $name as xs:string,
-                                       $fromSubstring as xs:string?,
-                                       $toSubstring as xs:string?)
+declare function f:fox-sibling($context as xs:string,
+                               $names as xs:string+,
+                               $fromSubstring as xs:string?,
+                               $toSubstring as xs:string?)
         as xs:string* {
-    let $parent := f:parentUri($context, ())
-    let $raw := f:foxfunc_fox-child($parent, $name, $fromSubstring, $toSubstring)
+    (
+    for $name in $names
+    let $parent := i:parentUri($context, ())
+    let $raw := f:foxChild($parent, $name, ())
     return $raw[not(. eq $context)]
+    ) => distinct-values()
 };
 
 (:~
@@ -205,35 +373,49 @@ declare function f:foxfunc_fox-sibling($context as xs:string,
  : obtained by replacing in $name substring $fromSubstring with $toSubstring.
  :
  : @param context the context URI
- : @param name a name pattern
+ : @param names one or several name patterns
  : @param fromSubstring used to map $name to a regex
  : @param toSubstring used to map $name to a regex
  : @return sibling URIs matching the name or the derived regex
  :)
-declare function f:foxfunc_fox-parent-sibling($context as xs:string,
-                                              $name as xs:string,
-                                              $fromSubstring as xs:string?,
-                                              $toSubstring as xs:string?)
+declare function f:fox-parent-sibling($context as xs:string,
+                                      $names as xs:string+,
+                                      $fromSubstring as xs:string?,
+                                      $toSubstring as xs:string?)
         as xs:string* {
-    f:parentUri($context, ()) ! f:foxfunc_fox-sibling(., $name, $fromSubstring, $toSubstring)
+    (        
+    for $name in $names return
+        i:parentUri($context, ()) 
+        ! f:fox-sibling(., $name, $fromSubstring, $toSubstring)
+    ) => distinct-values()        
 };
+
 (:~
- : Returns the ancestor URIs of a given URI, provided their name matches a given 
- : name, or a regex derived from it. If $fromSubstring and $toSubstring are 
- : supplied, the URI names must match the regex obtained obtained by replacing 
- : in $name substring $fromSubstring with $toSubstring.
+ : Returns for a set of URIs the ancestor URIs with a file name (final step) 
+ : matching a name or name pattern from $names, and not matching a name or name 
+ : pattern from $namesExcluded. 
  :
- : @param context the context URI
- : @param name a name pattern
- : @param fromSubstring used to map $name to a regex
- : @param toSubstring used to map $name to a regex
- : @return sibling URIs matching the name or the derived regex
+ : @param context the context URIs
+ : @param names names or name paterns of URIs to be included, whitespace separated
+ : @param namesExcluded names or name paterns of URIs to be excluded, whitespace separated
+ : @return selected child URIs
  :)
-declare function f:foxfunc_fox-ancestor($context as xs:string,                                        
-                                        $name as xs:string,
-                                        $fromSubstring as xs:string?,
-                                        $toSubstring as xs:string?)
+declare function f:foxAncestor($context as xs:string,                                        
+                               $names as xs:string?,
+                               $namesExcluded as xs:string?)
         as xs:string* {
+
+    let $cnameFilter := util:compileNameFilter($names, true())        
+    let $cnameFilterExclude := util:compileNameFilter($namesExcluded, true())
+    return (
+        for $c in $context 
+            return i:ancestorUriCollection($c, (), ()) 
+                   [not($names) or file:name(.) ! util:matchesNameFilter(., $cnameFilter)]
+                   [not($namesExcluded) or file:name(.) ! not(util:matchesNameFilter(., $cnameFilterExclude))]
+    ) => distinct-values()
+(:
+    (
+    for $name in $names
     let $regex :=
         if (not($fromSubstring) or not($toSubstring)) then 
             replace($name, '\*', '.*') !
@@ -242,8 +424,10 @@ declare function f:foxfunc_fox-ancestor($context as xs:string,
         else
             replace($name, $fromSubstring, $toSubstring, 'i') !
             concat('^', ., '$')
-    let $uris := f:ancestorUriCollection($context, $regex, false()) 
+    let $uris := i:ancestorUriCollection($context, $regex, false()) 
     return $uris
+    ) => distinct-values()
+:)    
 };
 
 (:~
@@ -253,16 +437,18 @@ declare function f:foxfunc_fox-ancestor($context as xs:string,
  : $name substring $fromSubstring with $toSubstring.
  :
  : @param context the context URI
- : @param name a name pattern
+ : @param names one or several name patterns
  : @param fromSubstring used to map $name to a regex
  : @param toSubstring used to map $name to a regex
  : @return sibling URIs matching the name or the derived regex
  :)
-declare function f:foxfunc_fox-ancestor-or-self($context as xs:string,                                        
-                                                $name as xs:string,
-                                                $fromSubstring as xs:string?,
-                                                $toSubstring as xs:string?)
+declare function f:fox-ancestor-or-self($context as xs:string,                                        
+                                        $names as xs:string+,
+                                        $fromSubstring as xs:string?,
+                                        $toSubstring as xs:string?)
         as xs:string* {
+    (
+    for $name in $names
     let $regex :=
         if (not($fromSubstring) or not($toSubstring)) then 
             replace($name, '\*', '.*') !
@@ -271,8 +457,475 @@ declare function f:foxfunc_fox-ancestor-or-self($context as xs:string,
         else
             replace($name, $fromSubstring, $toSubstring, 'i') !
             concat('^', ., '$')
-    let $uris := f:ancestorUriCollection($context, $regex, true()) 
+    let $uris := i:ancestorUriCollection($context, $regex, true()) 
     return $uris
+    ) => distinct-values()
+};
+
+(:~
+ : Returns a frequency distribution.
+ :
+ : @param values a sequence of terms
+ : @param min if specified - return only terms with a frequency >= $min
+ : @param max if specified - return only terms with a frequency >= $max
+ : @param kind the kind of frequency value - count, relfreq (relative frequency), 
+ :   percent (percent frequency)
+ : @param orderBy sort order - "a" (order by frequency ascending, 
+ -   "d" (order by frequency descending); default: alphabetically
+ : @param format  the output format, one of xml|json|csv|text|text*, default = text;
+ :   "text* denotes "text" followed by a number (e.g. text40) specifying the width 
+ :   of the term column - shorter terms are padded to this width
+ : @return the frequency distribution
+ :)
+declare function f:frequencies($values as item()*, 
+                               $min as xs:integer?, 
+                               $max as xs:integer?, 
+                               $kind as xs:string?, (: count | relfreq | percent :)
+                               $orderBy as xs:string?,
+                               $format as xs:string?)
+        as item() {
+        
+    let $width := 
+        if (not($format) or $format eq 'text*') then 1 + ($values ! string(.) ! string-length(.)) => max()
+        else if (matches($format, '^text\d')) then replace($format, '^text', '')[string()] ! xs:integer(.)
+        else ()
+    let $format := 
+        if (not($format)) then 'text'
+        else if (matches($format, '^text.')) then 'text'
+        else $format    
+ 
+    let $freqAttName := ($kind, 'count')[1]
+    
+    (: Function return the frequency representation :)
+    let $fn_count2freq :=
+        switch($kind)
+        case 'freq' return function($c, $nvalues) {($c div $nvalues) ! round(., 1) ! string(.) ! replace(., '^[^.]+$', '$0.0')}
+        case 'percent' return function($c, $nvalues) {($c div $nvalues * 100) ! round(., 1) ! string(.) ! replace(., '^[^.]+$', '$0.0')}
+        default return function($c, $nvalues) {$c}
+
+    (: Function item returning a term representation :)
+    let $fn_itemText :=
+        switch($format) 
+        case 'text' return function($s, $c) {
+            if (empty($width)) then concat($s, ' (', $c, ')')
+            else 
+                concat($s, ' ', 
+                       string-join(for $i in 1 to $width - string-length($s) - 1 return '.', ''), 
+                       ' (', $c, ')')}
+        case 'json' return function($s, $c) {'"'||$s||'": '||$c}
+        case 'csv' return function($s, $c) {'"'||$s||'",'||$c}
+        case 'xml' return ()
+        default return error(QName((), 'INVALID_ARG'), 
+            concat('Unknown frequencies format, should be text|xml|json|csv; found: ', $format))
+
+    let $nvalues := count($values)     
+    let $itemsUnordered :=        
+        for $value in $values
+        group by $s := string($value)
+        let $c := count($value)        
+        let $f := $fn_count2freq($c, $nvalues)
+        where (empty($min) or not($c) or $c ge $min) and (empty($max) or not($max) or $c le $max)
+        return <term text="{$s}" f="{$f}"/>
+
+    let $items :=
+        switch($orderBy)
+        case 'a' return 
+            for $item in $itemsUnordered 
+            order by $item/@f/number(.), $item/@text/lower-case(.) 
+            return $item
+        case 'd' return 
+            for $item in $itemsUnordered 
+            order by $item/@f/number(.) descending, $item/@text/lower-case(.) 
+            return $item
+        default return 
+            for $item in $itemsUnordered 
+            order by $item/@text/lower-case(.) 
+            return $item
+            
+    return  
+        switch($format)
+        case 'xml' return 
+            let $min := $items/@f/number(.) => min()
+            let $max := $items/@f/number(.) => max()
+            return
+                <terms>{
+                    if ($kind eq 'percent') then (
+                        attribute minPercent {$min},
+                        attribute maxPercent {$max}
+                    ) else if ($kind eq 'freq') then (
+                        attribute minFreq {$min},
+                        attribute maxFreq {$max}
+                    ) else (
+                        attribute minCount {$min},
+                        attribute maxCount {$max}
+                    ),
+                    $items/<item text="{@text}">{attribute {$freqAttName} {@f}}</item>
+            }</terms>
+        case 'json' return ('{', $items/$fn_itemText(@text, @f) ! concat('  ', .), '}') => string-join('&#xA;')
+        case 'csv' return $items/$fn_itemText(@text, @f) => string-join('&#xA;')
+        case 'text' return $items/$fn_itemText(@text, @f) => string-join('&#xA;')
+        default return $items => string-join('&#xA;')
+};      
+
+(:~
+ : Returns selected child elements of a given sequence of nodes. Selected child elementsnodes
+ : have a name matching a given name filter and not matching an optional name filter defining 
+ : exclusions. 
+ :
+ : Depending on $nameKind, the local name ('lname'), the JSON name ('jname') or
+ : the lexical name 'name') is considered when matching.
+ :
+ : When $ignoreCase is true, matching is performed ignoring character case.
+ :
+ : A name filter is a whitespace separated list of names or name patterns. Name
+ : patterns can use wildcards * and ?. Example: "foo bar* *foobar"
+ :
+ : @param context the context node
+ : @param names a name filter
+ : @param namesExcluded a name filter defining exclusions
+ : @return child nodes matching the name filter and not matching the name filter defining exclusions
+ :)
+declare function f:node-child($contextNodes as node()*,
+                              $nameKind as xs:string?,   (: name | lname | jname :)
+                              $names as xs:string?,
+                              $namesExcluded as xs:string?,
+                              $ignoreCase as xs:boolean?
+)
+        as node()* {
+    let $cnameFilter := $names ! util:compileNameFilter(., $ignoreCase)        
+    let $cnameFilterExclude := $namesExcluded ! util:compileNameFilter(., $ignoreCase)
+    let $fn_name := 
+        switch($nameKind)
+        case 'lname' return function($node) {$node/local-name(.)}
+        case 'jname' return function($node) {$node/local-name(.) ! convert:decode-key(.)}
+        case 'name' return function($node) {$node/name(.)}
+        default return error()
+    return
+        $contextNodes/*[$fn_name(.) ! 
+            util:matchesNameFilter(., $cnameFilter) and (
+                not($namesExcluded) or util:matchesNameFilter(., $cnameFilterExclude))]
+};
+
+(:~
+ : Creates an Item Location Report for a sequence of given nodes.
+ :
+ : @param nodes a sequence of JSON nodes
+ : @param withFolders the location report should include the folder containing the documents
+ : @return a location report
+ :)
+declare function f:nodesLocationReport($nodes as node()*,
+                                       $nameKind as xs:string?,   (: name | lname | jname :)
+                                       $withFolders as xs:boolean?)
+        as xs:string {        
+    let $fn_name := 
+        switch($nameKind)
+        case 'name' return name#1
+        case 'lname' return local-name#1
+        case 'jname' return f:jname#1
+        default return error(QName((), 'INVALID_ARG'), concat('Invalid "nameKind": ', $nameKind))
+    return
+    
+    $nodes/f:hlistEntry((
+        if ($withFolders) then f:baseUriDirectory(.) else (),
+        f:baseUriFileName(.), 
+        $fn_name(.), 
+        f:name-path(., 'jname', ()),
+        .[self::attribute(), text()]/concat('value: ', .)
+        ))
+        => f:hlist(('Folder'[$withFolders], 'File', 'Name', 'Path', 'Value'), ())
+};
+
+(:~
+ : Returns the JSON names of given nodes.
+ :
+ : @param nodes a sequence of nodes
+ : @return a sequence of JSON names
+ :)
+declare function f:jname($nodes as node()*)
+        as xs:string* {
+    $nodes ! local-name(.) ! convert:decode-key(.)        
+};
+
+(:~
+ : Returns the JSON Schema keywords found at and under a set of nodes from a 
+ : JSON Schema document.
+ :
+ : @param values JSON values
+ : @param namePatterns a list of names or name patterns, whitespace separated
+ : @return the resolved reference, if the value contains one, or the original value
+ :)
+declare function f:jschemaKeywords($values as element()*, 
+                                   $nameFilter as xs:string?)
+        as element()* {
+    let $cnameFilter := util:compileNameFilter($nameFilter, true())
+    return
+        $values/f:jschemaKeywordsRC(., $cnameFilter)
+};
+
+(:~
+ : Recursive helper function of jschemaKeywords().
+ :
+ : @param n a node to process
+ : @param filter a filter consisting of names and regular expressions
+ : @return the keyword nodes under the input node, including it
+ :)
+declare function f:jschemaKeywordsRC($n as node(),
+                                     $nameFilter as map(xs:string, item()*)?)
+        as node()* {
+    let $unfiltered :=        
+        typeswitch($n)
+        case element(default) return $n    
+        case element(discriminator) return $n    
+        case element(example) return $n
+        case element(examples) return $n
+        case element(enum) return $n    
+        case element(json) return ($n[parent::*], $n/*/f:jschemaKeywordsRC(., $nameFilter))
+        case element(patternProperties) return ($n, $n/*/*/f:jschemaKeywordsRC(., $nameFilter))    
+        case element(properties) return ($n, $n/*/*/f:jschemaKeywordsRC(., $nameFilter))
+        case element(_) return $n/*/f:jschemaKeywordsRC(., $nameFilter)
+        default return 
+            if (starts-with($n/name(), 'x-')) then $n
+            else ($n, $n/*/f:jschemaKeywordsRC(., $nameFilter))
+    return
+        if (empty($nameFilter)) then $unfiltered else
+        for $node in $unfiltered
+        let $jname := $node/local-name() ! convert:decode-key(.) ! lower-case(.)
+        where util:matchesNameFilter($jname, $nameFilter)        
+        return $node
+};        
+
+
+(:~
+ : Returns the items in $value which are not distinct, that is, which
+ : occur in $value more than once.
+ :
+ : @param value the items to analyze
+ : @param ignoreCase if true, distinctness check ignores case
+ : @return the non-distinct values
+ :)
+declare function f:nonDistinctValues($value as item()*,
+                                     $ignoreCase as xs:boolean?)
+        as item()* {
+    if (not($ignoreCase)) then
+        for $item in $value
+        group by $data := data($item)
+        where count($item) gt 1
+        return $data
+    else
+        for $item in $value
+        group by $data := data($item) ! lower-case(.)
+        where count($item) gt 1
+        return distinct-values($item)
+};
+
+(:~
+ : Returns the URIs in $uris which are contain a non-distinct file name, that is,
+ : which contain a file name also contained by a different URI.
+ :
+ : @param uris the URIs to analyze
+ : @param ignoreCase if true, distinctness check ignores case
+ : @return the URIs with a non-distinct file name
+ :)
+declare function f:nonDistinctFileNames($uris as item()*,
+                                        $ignoreCase as xs:boolean?)
+        as item()* {
+    if (not($ignoreCase)) then
+        for $uri in $uris
+        group by $fname := file:name($uri)
+        where count($uri) gt 1
+        return $uri
+    else
+        for $uri in $uris
+        group by $fname := file:name($uri) ! lower-case(.)
+        where count($uri) gt 1
+        return distinct-values($uri)
+};
+
+(:~
+ : Returns the JSON Schema keywords found at and under a set of nodes from a 
+ : JSON Schema document.
+ :
+ : @param values JSON values
+ : @param namePatterns a list of names or name patterns, whitespace separated
+ : @return the resolved reference, if the value contains one, or the original value
+ :)
+declare function f:oasKeywords($values as node()*, 
+                               $namePatterns as xs:string?)
+        as element()* {
+    let $values := $values ! root()/descendant-or-self::*[1]        
+    let $cnameFilter := util:compileNameFilter($namePatterns, true())
+    for $value in $values
+    let $oasVersion := $value/ancestor-or-self::*[last()]/(
+        openapi/substring(., 1, 1),
+        swagger/substring(., 1, 1)
+        )[1]
+    return        
+        $value/f:oasKeywordsRC(., $oasVersion, $cnameFilter)
+};
+
+(:~
+ : Recursive helper function of jschemaKeywords().
+ :
+ : @param n a node to process
+ : @param filter a filter consisting of names and regular expressions
+ : @return the keyword nodes under the input node, including it
+ :)
+declare function f:oasKeywordsRC($n as node(),
+                                 $version as xs:string?,
+                                 $nameFilter as map(xs:string, item()*)?)
+        as node()* {
+    let $unfiltered :=        
+        typeswitch($n)
+        
+        (: Array item - continue with children :)
+        case element(_) return $n/*/f:oasKeywordsRC(., $version, $nameFilter)
+        
+        (: Keywords with version-dependent treatment :)
+        
+        (: Keyword 'examples' 
+           - if version 2: do not continue recursion;
+           - if version 3: treat as map and continue with children :)           
+        case element(examples) return (
+            $n,
+            if ($version ! starts-with(., '2')) then ()
+            else $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+            
+        (: Schema-related keywords - do not continue recursion :)
+        case element(schema) return $n
+        case element(schemas) return $n
+        case element(definitions) return $n (: V2 :)
+        
+        (: Maps with object-valued entries - use the map object and continue with the children of the map entries :)
+
+        case element(callbacks) return ($n, $n/*/*/*/f:oasKeywordsRC(., $version, $nameFilter)) (: Callback has a single member = expr :)
+        case element(content) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))   
+        case element(encoding) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        case element(examples) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        case element(headers) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+        case element(links) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+        case element(pathItems) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        case element(paths) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        case element(requestBodies) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+        case element(responses) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+        case element(securityDefinitions) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))   (: V2 :)
+        case element(securitySchemes) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        case element(variables) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))
+        case element(webhooks) return ($n, $n/*/*/f:oasKeywordsRC(., $version, $nameFilter))        
+        
+        (: Keywords which MAY be a map :)
+        (: ... parameters - dependent on location an array or a map:
+               - in Components Object or Link Object or Swagger Object (V2): a map
+               - elsewhere (in PathItem Object, Operation Object): an array
+         :)
+        case element(parameters) return (
+            $n, 
+            if ($n/(parent::components, ../parent::links, parent::json)) then $n/*/*/f:oasKeywordsRC(., $version, $nameFilter)
+            else $n/*/f:oasKeywordsRC(., $version, $nameFilter)
+        )            
+        
+        (: Maps string-string - do not consider children :)        
+        case element(mapping) return $n (: map: string -> string :)        
+        case element(scopes) return $n (: map: string -> string :)
+        
+        (: Keywords with type Any - do not consider children :)
+        case element(example) return $n
+        case element(value) return $n
+        
+        (: Keyword 'security' :)
+        case element(security) return $n   (: an array of objects with a single property '{name}' :)
+
+        (: requestBody - if in Link Object, do not recurse deeper :)
+        case element(requestBody) return (
+            $n,
+            if ($n/../parent::links) then () else
+            $n/*/f:oasKeywordsRC(., $version, $nameFilter)
+        )
+        
+        default return (
+            $n, 
+            if (starts-with(local-name($n), 'x-')) then () else
+                $n/*/f:oasKeywordsRC(., $version, $nameFilter))
+   
+    return
+        if (empty($nameFilter)) then $unfiltered else
+        for $node in $unfiltered
+        let $jname := $node/local-name() ! convert:decode-key(.) ! lower-case(.)
+        where util:matchesNameFilter($jname, $nameFilter)
+        return $node
+};        
+
+
+(:~
+ : Returns the JSON Schema keywords found in OpenAPI document.
+ :
+ : @param oasNodes nodes from OpenAPI documents
+ : @return the keywords contained by the OpenAPI documents
+ :)
+declare function f:oasJschemaKeywords($oasNodes as node()*,
+                                      $namePatterns as xs:string?)
+        as element()* {
+    let $oasNodes :=
+        $oasNodes ! (typeswitch(.) case document-node() return * default return ancestor-or-self::*[last()])
+    return
+    
+    $oasNodes/ancestor-or-self::*[last()]/(
+        definitions/*/*/f:jschemaKeywords(., $namePatterns),
+        components/schemas/*/*/f:jschemaKeywords(., $namePatterns),
+        f:oasMsgSchemas(.)/*/f:jschemaKeywords(., $namePatterns)
+    )        
+};
+
+(:~
+ : Returns the effective content of a JSON value: if it is an object containing
+ : a reference, the reference is recursively resolved. Otherwise, the original
+ : value is returned.
+ :
+ : This function can be used in order to integrate reference resolving into navigation.
+ : Example: all payload schemas in an OpenAPI document may be collected like this:
+ :
+ :    $oas\paths\*\jeff()\(get, post, put, delete, options, head, patch, trace)
+ :    \(
+ :         (requestBody, responses\*)\jeff()\(content\schema, schema),
+ :         parameters\_\jeff()[in eq 'body']\schema
+ :    )
+ :
+ : @param value a JSON value
+ : @return the resolved reference, if the value contains one, or the original value
+ :)
+declare function f:jsonEffectiveValue($value as element())
+        as element()? {
+    let $reference := $value/_0024ref return
+    
+    if (not($reference)) then $value else
+        $reference ! f:resolveJsonRef(., .) ! f:jsonEffectiveValue(.)
+};
+
+(:~
+ : Returns the schema objects describing the messages of an OpenAPI document.
+ :
+ : @param oas OpenAPI documents (root element or some other node)
+ : @return the schema objects describing messages
+ :)
+declare function f:oasMsgSchemas($oas as node()*) {
+    let $fn_soContent := function ($co) {$co/*/schema}
+    let $fn_soParameters := function ($p) {$p/*[in eq 'body']/schema}
+    let $fn_soRequestBody := function ($rb) {$rb/content/$fn_soContent(.)}
+    let $fn_soResponseObject := function ($ro) {$ro/(schema, content/$fn_soContent(.))}
+    let $fn_soPathItem := 
+        function ($pi) {
+            $pi/(get, post, put, delete, options, head, patch, trace)/(
+                parameters/$fn_soParameters(.),
+                requestBody/$fn_soRequestBody(.),
+                responses/*/$fn_soResponseObject(.))}
+    let $oas := $oas/root()/descendant-or-self::json[1]            
+    return $oas/(
+        paths/*/$fn_soPathItem(.),
+        parameters/$fn_soParameters(.),
+        responses/*/$fn_soResponseObject(.),
+        components/(
+            responses/*/$fn_soResponseObject(.),
+            requestBodies/*/$fn_soRequestBody(.),
+            pathItems/*/$fn_soPathItem(.)))    
 };
 
 (:~
@@ -283,7 +936,7 @@ declare function f:foxfunc_fox-ancestor-or-self($context as xs:string,
  : @param count the number of repeats
  : @return the result of repeating the string
  :)
-declare function f:foxfunc_repeat($string as xs:string?, $count as xs:integer?)
+declare function f:repeat($string as xs:string?, $count as xs:integer?)
         as xs:string {
     string-join(for $i in 1 to $count return $string, '')
 };      
@@ -295,9 +948,9 @@ declare function f:foxfunc_repeat($string as xs:string?, $count as xs:integer?)
  : @param dir the folder into which to write
  : @return 0 if no errors were observed, 1 otherwise
  :)
-declare function f:foxfunc_write-files($files as item()*, 
-                                       $dir as xs:string?,
-                                       $encoding as xs:string?)
+declare function f:write-files($files as item()*, 
+                               $dir as xs:string?,
+                               $encoding as xs:string?)
         as xs:integer {
     let $tocItems :=        
         for $file at $pos in $files
@@ -340,7 +993,7 @@ declare function f:foxfunc_write-files($files as item()*,
         let $fname_ := string-join(($dir, $fname), '/')        
         let $fileContent := 
             if ($file instance of node()) then serialize($file)
-            else f:fox-unparsed-text($file, $encoding, ())        
+            else i:fox-unparsed-text($file, $encoding, ())        
         return
             try {
                 trace(file:write-text($fname_, $fileContent) , concat('Write file: ', $fname_, ' '))
@@ -356,9 +1009,9 @@ declare function f:foxfunc_write-files($files as item()*,
  : @param dir the folder into which to write
  : @return 0 if no errors were observed, 1 otherwise
  :)
-declare function f:foxfunc_write-json-docs($files as xs:string*, 
-                                           $dir as xs:string?,
-                                           $encoding as xs:string?)
+declare function f:write-json-docs($files as xs:string*, 
+                                   $dir as xs:string?,
+                                   $encoding as xs:string?)
         as xs:integer {
     let $tocItems :=        
         for $file at $pos in $files
@@ -411,7 +1064,7 @@ declare function f:foxfunc_write-json-docs($files as xs:string*,
             if ($file instance of node()) then serialize($file)
             else 
                 try {
-                    let $fileContent := f:fox-unparsed-text($file, $encoding, ())
+                    let $fileContent := i:fox-unparsed-text($file, $encoding, ())
                     return
                         json:parse($fileContent) ! serialize(.)
                 } catch * {trace((), 
@@ -440,6 +1093,27 @@ declare function f:foxfunc_write-json-docs($files as xs:string*,
 :)        
 };
 
+(:~
+ : Constructs an element with content given by $content. Each pair of items in $atts
+ : provides the name and value of an attribute to be added.
+ :
+ : @param content the element content
+ : @param name the element name
+ : @param atts attributes to be added
+ : @return the constructed element
+ :)
+declare function f:xelement($content as item()*,
+                            $name as xs:string,
+                            $atts as item()*)
+        as element() {
+    element {$name} {
+        for $attName at $pos in $atts[(position() + 1) mod 2 eq 0]
+        let $attValue := $atts[$pos + 1]
+        return
+            attribute {$attName} {$attValue},
+        $content            
+    }
+};      
 
 (:~
  : Foxpath function `xwrap#3`. Collects the items of $items into an XML document.
@@ -452,13 +1126,16 @@ declare function f:foxfunc_write-json-docs($files as xs:string*,
  : Before copying into the result document, every item from $items is processed as follows:
  : (A) if an item is a node:
  :   (1) if flag 'b' is set, a copy enhanced by an @xml:base attribute is created
- :   (2) if flag 'a' is set, the item is not modified if it is not an attribute;
+ :   (2) if flag 'p' is set, a copy enhanced by a @fox:path attribute is created
+ :   (3) if flag 'j' is set, a copy enhanced by a @fox:jpath attribute is created
+ :   (4) if flag 'f' is set, the copy is "flattened" - child nodes are discarded  
+ :   (4) if flag 'a' is set, the item is not modified if it is not an attribute;
  :       if it is an attribute, it is mapped to an element which has a name 
  :       equal to the name of the parent of the attribute, and which contains a 
  :       copy of the attribute 
- :   (2) if flag 'A' is set, treatment as with flag 'a', but the constructed element
+ :   (5) if flag 'A' is set, treatment as with flag 'a', but the constructed element
  :       has no namespace URI 
- :   (3) otherwise, the item is not modified
+ :   (6) otherwise, the item is not modified
 
  : (B) if an item is atomic: 
  :   (1) if flag 'd' is set, the item is interpreted as URI and it is attempted to be
@@ -481,10 +1158,10 @@ declare function f:foxfunc_write-json-docs($files as xs:string*,
  : @param options foxpath processing options
  : @return the result document
  :)
-declare function f:foxfunc_xwrap($items as item()*, 
-                                 $name as xs:QName, 
-                                 $flags as xs:string?, 
-                                 $name2 as xs:QName?, $options as map(*)?) 
+declare function f:xwrap($items as item()*, 
+                         $name as xs:QName, 
+                         $flags as xs:string?, 
+                         $name2 as xs:QName?, $options as map(*)?) 
         as element()? {
     (: name2 is the name of inner wrapper elements, wrapping an individual item :)
     let $name2 := if (empty($name2)) then '_text_' else $name2   
@@ -495,66 +1172,91 @@ declare function f:foxfunc_xwrap($items as item()*,
         order by if ($sortRule eq 's') then $item else if ($sortRule eq 'S') then lower-case($item) else ()
         return 
 
-        (: item a node => copy item :)
-        if ($item instance of node()) then
-            if (contains($flags, 'b') and ($item instance of element() or $item instance of document-node())) then
-                let $baseUri := base-uri($item)
-                let $elem := $item/descendant-or-self::*[1]
-                return
-                    let $xmlBase := if ($elem/@xml:base) then () else attribute xml:base {$baseUri}
-                    return
-                        element {node-name($elem)} {
-                            $elem/@*, $xmlBase, $elem/node()
-                        }
-            else if (contains($flags, 'a') or contains($flags, 'A')) then
-                if (not($item/self::attribute())) then $item
-                else 
-                    let $elemName := if (contains($flags, 'A')) then $item/../local-name(.)
-                                     else $item/../QName(namespace-uri(.), local-name(.))
-                    return element {$elemName} {$item}
-            else
-                $item
-                
-        (: item a URI, flag 'd' => parse document at that URI :)                
-        else if (contains($flags, 'd')) then
-            let $doc := try {i:fox-doc($item, $options)/*} catch * {()}
+        typeswitch($item)
+        
+        (: item a node => copy item :)        
+        case element() | attribute() | document-node() return
+            let $item := if ($item/self::document-node()) then $item/* else $item
+            let $additionalAtts := (
+                if (not(contains($flags, 'b'))) then () else
+                    attribute xml:base {$item/base-uri(.)},
+                if (not(contains($flags, 'p'))) then () else
+                    attribute path {$item/f:name-path(., 'name', ())},
+                if (not(contains($flags, 'j'))) then () else
+                    attribute jpath {$item/f:name-path(., 'jname', ())}
+            )
+            let $atts :=
+                if (empty($additionalAtts) or empty($item/@*)) then $item/@*
+                else
+                    let $additionalAttNames := $additionalAtts ! node-name(.)
+                    return $item/@*[not(node-name() = $additionalAttNames)]
             return
-                if ($doc) then 
-                    if (contains($flags, 'b')) then
-                        let $xmlBase := if ($doc/@xml:base) then () else attribute xml:base {$item}
-                        return
-                            if (not($xmlBase)) then $doc else
-                                element {node-name($doc)} {
-                                    $doc/@*,
-                                    $xmlBase,
-                                    $doc/node()
-                                }
-                    else $doc
-                else                                    
-                    <PARSE-ERROR>{$item}</PARSE-ERROR>
+                (: Flags aA - attribute item is turned into an element :)
+                if (contains($flags, 'a') or contains($flags, 'A')) then    
+                    if (not($item/self::attribute())) then $item
+                    else 
+                        let $elemName := $item/../(
+                            if (contains($flags, 'A')) then local-name(.)
+                            else QName(namespace-uri(.), local-name(.)))
+                        return element {$elemName} {$additionalAtts, $item}
+                        
+                (: Flag f - discard child nodes :)
+                else if (contains($flags, 'f')) then
+                    element {node-name($item)} {$additionalAtts, $atts}
                     
-        (: item a URI, flag 'w' => read text at that URI, write it into a wrapper element :)                    
-        else if (contains($flags, 'w')) then
-            let $text := try {i:fox-unparsed-text($item, (), $options)} catch * {()}
-            return
-                if ($text) then element {$name2} {attribute xml:base {$item}, $text}
-                else <READ-ERROR>{$item}</READ-ERROR>
+                (: With additional attributes :)
+                else if (not($additionalAtts)) then $item
                 
-        (: item a URI, flag 't' => read text at that URI, copy it into result :)                
-        else if (contains($flags, 't')) then
-            let $text := try {i:fox-unparsed-text($item, (), $options)} catch * {()}
-            return
-                if ($text) then $text
-                else <READ-ERROR>{$item}</READ-ERROR>
+                (: Plain copy :)
+                else
+                    $item/element {node-name(.)} {$additionalAtts, $atts, node()}
                 
-        (: item a URI, flag 'c' => use item as ist :)                
-        else if (contains($flags, 'c')) then
-            element {$name2} {$item}
+        (: item a URI, flag 'd' => parse document at that URI :)
+        default return
+            if (contains($flags, 'd')) then
+                let $doc := try {i:fox-doc($item, $options)/*} catch * {()}
+                return if (not($doc)) then <PARSE-ERROR uri="{$item}"/> else
+ 
+                if (contains($flags, 'b')) then
+                    let $xmlBase := if ($doc/@xml:base) then () else attribute xml:base {$item}
+                    return
+                        if (not($xmlBase)) then $doc else
+                            element {node-name($doc)} {
+                                $doc/@*, $xmlBase, $doc/node()
+                                    }
+                else $doc
+                    
+            (: item a URI, flag 'w' => read text at that URI, write it into a wrapper element :)                    
+            else if (contains($flags, 'w')) then
+                let $text := try {i:fox-unparsed-text($item, (), $options)} catch * {()}
+                return
+                    if ($text) then element {$name2} {attribute xml:base {$item}, $text}
+                    else <READ-ERROR uri="{$item}"/>
+                
+            (: item a URI, flag 't' => read text at that URI, copy it into result :)                
+            else if (contains($flags, 't')) then
+                let $text := try {i:fox-unparsed-text($item, (), $options)} catch * {()}
+                return
+                    if ($text) then $text
+                    else <READ-ERROR uri="{$item}"/>
+                
+            (: flag 'c' => wrap item in an element :)                
+            else if (contains($flags, 'c')) then
+                element {$name2} {$item}
             
-        else
-            $item
+            else $item
+            
+    (: Write wrapper :)            
+    let $namespaces := 
+        for $nn in f:extractNamespaceNodes($val[. instance of element()])
+        group by $prefix := name($nn)
+        return $nn[1]
     return
-        element {$name} {attribute countItems {count($val)}, $val}
+        element {$name} {
+            attribute countItems {count($val)},
+            $namespaces,
+            $val
+        }
 };
 
 (:~
@@ -565,7 +1267,7 @@ declare function f:foxfunc_xwrap($items as item()*,
  : @param elem the element to be observed
  : @return strings representing namespace bindings
  :)
-declare function f:foxfunc_in-scope-namespaces($item as item()) 
+declare function f:in-scope-namespaces($item as item()) 
         as xs:string+ {        
     let $elem :=
         typeswitch($item)
@@ -588,9 +1290,9 @@ declare function f:foxfunc_in-scope-namespaces($item as item())
  : @param elem the element to be observed
  : @return strings representing namespace bindings
  :)
-declare function f:foxfunc_in-scope-namespaces-descriptor($item as item()) 
+declare function f:in-scope-namespaces-descriptor($item as item()) 
         as xs:string+ {        
-    f:foxfunc_in-scope-namespaces($item) => string-join(', ')
+    f:in-scope-namespaces($item) => string-join(', ')
 };    
 
 (:~
@@ -601,7 +1303,7 @@ declare function f:foxfunc_in-scope-namespaces-descriptor($item as item())
  : @param item a string
  : @return the result of character replacements reversed
  :)
-declare function f:foxfunc_unescape-json-name($item as item()) as xs:string { 
+declare function f:unescape-json-name($item as item()) as xs:string { 
     string-join(
         analyze-string($item, '_[0-9a-f]{4}')/*/(typeswitch(.)
         case element(fn:match) return substring(., 2) ! concat('"\u', ., '"') ! parse-json(.)
@@ -616,7 +1318,7 @@ declare function f:foxfunc_unescape-json-name($item as item()) as xs:string {
  : @param mediatype mediatype expected
  : @return the resource, either as XDM root node, or as text
  :)
-declare function f:foxfunc_resolve-link($node as node(), $mediatype as xs:string?)
+declare function f:resolve-link($node as node(), $mediatype as xs:string?)
         as item()? {
     let $base := $node/ancestor-or-self::*[1]        
     let $uri := 
@@ -632,5 +1334,722 @@ declare function f:foxfunc_resolve-link($node as node(), $mediatype as xs:string
             return
                 if ($mediatype eq 'json') then try {json:parse($text)} catch * {()}
                 else $text
-};            
+};        
+
+(:~
+ : Returns the child element names of a node. If $concat is true, the sorted names are 
+ : concatenated, using ', ' as separator. Otherwise the names are returned
+ : as a sequence. Dependent on $nameKind, the local names (lname), the JSON
+ : names (jname) or the lexical names (name) are returned. Names are sorted.
+ :
+ : When using $namePattern, only those child elements are considered which have
+ : a local name matching the pattern.
+ :
+ : Example: .../foo/child-names(., ', ', false(), '*put')
+ : Example: .../foo/child-names(., ', ', false(), 'input|output') 
+ :
+ : @param nodes nodes (only elements contribute to the result)
+ : @param concat if true, the names are concatenated
+ : @param nameKind one of "name", "lname" or "jname" 
+ : @param namePatterns optional name patterns selecting child names to be considered
+ : @param excludedNamePattern optional name patterns selecting child elements to be ignored
+ : @return the names as a sequence, or as a concatenated string
+ :)
+declare function f:child-names($nodes as node()*, 
+                               $concat as xs:boolean?, 
+                               $nameKind as xs:string?,   (: name | lname | jname :)
+                               $namePatterns as xs:string?,
+                               $excludedNamePatterns as xs:string?)
+        as xs:string* {
+    let $nameRegexes := $namePatterns 
+                      ! tokenize(.)
+                      ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+                      ! concat('^', ., '$')        
+    let $excludedNameRegexes := 
+                      $excludedNamePatterns
+                      ! tokenize(.)
+                      ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+                      ! concat('^', ., '$')
+    let $separator := ', '[$concat]
+
+    for $node in $nodes
+    let $items := $node/*
+       [empty($nameRegexes) or (some $nameRegex in $nameRegexes satisfies 
+         matches(local-name(.), $nameRegex, 'i'))]
+       [empty($excludedNameRegexes) or not(
+         some $excludedNameRegex in $excludedNameRegexes satisfies 
+            matches(local-name(.), $excludedNameRegex, 'i'))]
+    let $names := 
+        if ($nameKind eq 'lname') then 
+            ($items/local-name(.)) => distinct-values() => sort()
+        else if ($nameKind eq 'jname') then 
+            ($items/convert:decode-key(local-name(.))) => distinct-values() => sort()
+        else ($items/name(.)) => distinct-values() => sort()
+    let $path :=        
+        if (exists($separator)) then string-join($names, $separator)
+        else $names
+    order by $path        
+    return
+        $path
+};        
+
+(:~
+ : Returns the descendant element names of a node. If $separator is specified, the sorted
+ : names are concatenated, using this separator, otherwise the names are returned
+ : as a sequence. If $localNames is true, the local names are returned, otherwise the 
+ : lexical names. 
+ :
+ : When using $namePattern, only those descendant elements are considered which have
+ : a local name matching the pattern.
+ :
+ : Example: .../foo/descendant-names(., ', ', false(), '*put')
+ : Example: .../foo/descendant-names(., ', ', false(), 'input|output') 
+ :
+ : @param node a node (unless it is an element, the function returns the empty sequence)
+ : @param separator if used, the names are concatenated, using this separator
+ : @param localNames if true, the local names are returned, otherwise the lexical names 
+ : @param namePattern an optional name pattern filtering the descendant elements to be considered
+ : @return the names as a sequence, or as a concatenated string
+ :)
+declare function f:descendant-names(
+                             $node as node(), 
+                             $concat as xs:boolean?, 
+                             $nameKind as xs:string?,   (: name | lname | jname :)
+                             $namePattern as xs:string?,
+                             $excludedNamePattern as xs:string?)
+        as xs:string* {
+    let $nameRegex := $namePattern ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+                      ! concat('^', ., '$')        
+    let $excludedNameRegex := $excludedNamePattern ! replace(., '\*', '.*') ! replace(., '\?', '.') 
+                      ! concat('^', ., '$')        
+    let $items := $node//*
+       [not($nameRegex) or matches(local-name(.), $nameRegex, 'i')]
+       [not($excludedNameRegex) or not(matches(local-name(.), $excludedNameRegex, 'i'))]
+    let $separator := ', '[$concat]
+    let $names := 
+        if ($nameKind eq 'lname') then 
+            ($items/local-name(.)) => distinct-values() => sort()
+        else if ($nameKind eq 'jname') then 
+            ($items/f:unescape-json-name(local-name(.))) => distinct-values() => sort()
+        else ($items/name(.)) => distinct-values() => sort()
+    return
+        if (exists($separator)) then string-join($names, $separator)
+        else $names
+};        
+
+(:~
+ : Returns the parent name of a node. If $localNames is true, the local name is returned, 
+ : otherwise the lexical names. 
+ :
+ : @param node a node
+ : @param localName if true, the local name is returned, otherwise the lexical name
+ : @return the parent name
+ :)
+declare function f:fileCopy($fileUri as xs:string,
+                            $targetUri as xs:string,
+                            $options as map(xs:string, item()*)?)
+        as empty-sequence() {
+    let $fileUriDomain := i:uriDomain($fileUri, ())
+    return
+        if (not($fileUriDomain eq 'FILE_SYSTEM')) then 
+            error(QName((), 'INVALID_CALL'),
+                concat('Function file-copy() expects a source file from the ',
+                  'file system; file URI: ', $fileUri))
+            else
+
+    let $targetUriDomain := i:uriDomain($targetUri, ())
+    return
+        if (not($targetUriDomain eq 'FILE_SYSTEM')) then 
+            error(QName((), 'INVALID_CALL'),
+                concat('Function file-copy() expects a target folder in the ',
+                  'file system; target dir URI: ', $targetUri))
+            else
+            
+    if (i:fox-file-exists($targetUri, ())) then
+        if (i:fox-is-file($targetUri, ()) and not($options?overwrite)) then
+             error(QName((), 'INVALID_CALL'), concat('Target file exists; use option "overwrite" ',
+                 'if you want to overwrite existing files; file URI: ', $targetUri))
+        else file:copy($fileUri, $targetUri)
+    else
+        let $targetParentUri := trace(file:parent($targetUri) , '___TARGET_PARENT_URI: ')
+        let $_CRETE := 
+            if (i:fox-file-exists($targetParentUri, ())) then ()
+            else if (not($options?create)) then
+                error(QName((), 'INVALID_CALL'), concat('Target directory does not ',
+                    'exists; use option "create" if you want automatic creation of ',
+                    'a non-existent target dir; target dir URI: ', $targetParentUri))
+            else file:create-dir($targetParentUri)
+        return
+            file:copy($fileUri, $targetUri)
+                
+(:                
+                if (not(i:fox-file-exists(file:parent($targetUri))) then file:copy($
+    let $targetFileExists :=
+        $targetResourceExists and (
+            i:fox-is-file($targetUri, ()) or
+            i:fox-file-exists($targetUri||'/'||file:name($fileUri), ()))
+    let $_CHECK := (
+        if (not($targetFileExists) or $options?overwrite) then () 
+        else
+            error(QName((), 'INVALID_CALL'), concat('Target file exists; use option "overwrite" ',
+                'if you want to overwrite existing files; file URI: ', $targetUri))
+        ,                
+        
+    if (i:fox-file-exists($targetUri, ())) then
+        let $_CHECK :=
+            if (i:fox-is-dir($targetDirUri)) then
+                let $targetFileUri := $targetUri || '/' || file:name($fileUri)
+                return
+                    if (i:fox-file-exists($targetFileUri, .)) then
+                if ($options?overwrite) then ()
+                else
+                    error(QName((), 'INVALID_CALL'), concat('Target file exists; use option "overwrite" ',
+                        'if you want to overwrite existing files; file URI: ', $targetUri))
+                        
+        return
+            file:copy($fileUri, $targetUri)
+                
+    else            
+    let $_CREATE_DIR :=
+        let $targetDirExists := i:fox-file-exists($targetDirUri, ())    
+        return
+            if ($targetDirExists) then ()
+            else if ($options?create) then file:create-dir($targetDirUri)
+            else
+                error(QName((), 'INVALID_CALL'), concat('Target directory does not ',
+                    'exists; use option "create" if you want automatic creation of ',
+                    'a non-existent target dir; target dir URI: ', $targetDirUri))
+    let $_CHECK_OVERWRITE :=
+        if ($options?overwrite) then ()
+        else if (not(i:fox-file-exists($targetDirUri || '/' || file:name($fileUri), ()))) then ()
+        else
+            error(QName((), 'INVALID_CALL'), concat('Target file exists; use option "overwrite" ',
+                'if you want to overwrite existing files; file URI: ', $fileUri))
+    return
+        file:copy($fileUri, $targetDirUri)
+:)        
+};        
+
+(:~
+ : Returns the parent name of a node. If $localNames is true, the local name is returned, 
+ : otherwise the lexical names. 
+ :
+ : @param node a node
+ : @param localName if true, the local name is returned, otherwise the lexical name
+ : @return the parent name
+ :)
+declare function f:parent-name($node as node(),
+                               $nameKind as xs:string?)   (: name | lname | jname :)
+        as xs:string* {
+    let $item := $node/..
+    let $name := if ($nameKind eq 'lname') then $item/local-name(.)
+                 else if ($nameKind eq 'jname') then $item/f:unescape-json-name(local-name(.))
+                 else $item/name(.)
+    return
+        $name
+};        
+
+(:~
+ : Returns those atomic items which are in the left value, but not in the right one. 
+ :
+ : @param leftValue a value
+ : @param rightValue another value 
+ : @return the items in the left value, but not the right one
+ :)
+declare function f:leftValueOnly($leftValue as item()*,
+                                 $rightValue as item()*)
+    as item()* {
+    $leftValue[not(. = $rightValue)]
+};
+
+(:~
+ : Returns for a sequence of documents for each document those data paths which are not contained
+ : in all other documents.
+ :
+ : @param docs a sequence of documents or document URIs
+ : @return a structured representation of data paths not used by all documents
+ :)
+declare function f:pathCompare($items as item()*,
+                               $nameKind as xs:string?,
+                               $options as xs:string?)
+        as item()? {
+    let $options := $options ! tokenize(.) ! lower-case(.)
+    
+    let $nameKind := ($nameKind, 'lname')[1]
+    let $docs :=
+        for $item in $items return
+            if ($item instance of node()) then $item
+            else i:fox-doc($item, ())
+    let $count := count($docs)
+    return
+        if ($count lt 2) then () else
+    
+    let $pathArrays := 
+        for $doc at $pos in $docs
+        let $paths := $doc/f:allDescendants(.)/f:name-path(., $nameKind, ()) => distinct-values() => sort()
+        return array{$paths}
+        
+    let $commonPaths := util:atomIntersection($pathArrays)
+    let $pathsMap := map:merge(
+        for $doc at $pos in $docs
+        let $paths := $doc/f:allDescendants(.)/f:name-path(., $nameKind, ()) => distinct-values() => sort()
+        return map:entry($pos, $paths)
+    )
+    let $deviations :=    
+        for $i in 1 to $count
+        let $paths := $pathArrays[$i] ! array:flatten(.)
+        let $pathsNotCommon := $paths[not(. = $commonPaths)]
+        return
+            if (empty($pathsNotCommon)) then () else
+            <document nr="{$i}">{
+                $docs[$i]/base-uri(.) ! attribute uri {.},
+                <pathsNotInAll count="{count($pathsNotCommon)}">{
+                    if ($options = 'counts') then () else
+                    ($pathsNotCommon => sort()) ! <path p="{.}"/>
+                }</pathsNotInAll>            
+            }</document>
+    return
+        if (empty($deviations)) then ()
+        else
+            <deviations>{
+                $deviations
+            }</deviations>
+};
+
+(:~
+ : Returns the paths leading from a context node to all descendants. This may be
+ : regarded as a representation of the node's content, hence the function name.
+ :
+ : @param context a node
+ : @param nameKind the kind of name used as path steps: 
+ :   jname - JSON names; lname - local names; name - lexical names
+ : @param includedNames name patterns of nodes which must be present in the path 
+ : @param excludedNames name patterns of nodes excluded from the content 
+ : @param excludedNodes nodes excluded from the content 
+ : @return the parent name
+ :)
+declare function f:pathContent($context as node()*, 
+                               $nameKind as xs:string?,
+                               $alsoInnerNodes as xs:boolean?,
+                               $includedNames as xs:string?,
+                               $excludedNames as xs:string?,
+                               $excludedNodes as node()*)
+        as xs:string* {
+            
+    let $descendants := (
+        if ($nameKind eq 'jname') then $context/descendant::*
+        else $context/descendant::*/(., @*)
+    )[$alsoInnerNodes or not(*)]
+    
+    let $includedNamesRegex :=
+        $includedNames ! tokenize(.)
+        ! replace(., '\*', '.*')
+        ! replace(., '\?', '.')
+        ! concat('^', ., '$')
+
+    let $excludedNamesRegex :=
+        $excludedNames ! tokenize(.)
+        ! replace(., '\*', '.*')
+        ! replace(., '\?', '.')
+        ! concat('^', ., '$')
+
+    let $includedNodes :=
+        if (empty($includedNamesRegex)) then ()
+        else if ($nameKind eq 'jname') then
+            $descendants[name() ! convert:decode-key(.) ! (some $r in $includedNamesRegex satisfies matches(., $r, 'i'))]
+        else
+            $descendants[local-name(.) ! (some $r in $includedNamesRegex satisfies matches(., $r, 'i'))]
+    
+    let $excludedNodes := (
+        $excludedNodes,
+        
+        if (empty($excludedNamesRegex)) then ()
+        else if ($nameKind eq 'jname') then
+            $descendants[name() ! convert:decode-key(.) ! (some $r in $excludedNamesRegex satisfies matches(., $r, 'i'))]
+        else
+            $descendants[local-name(.) ! (some $r in $excludedNamesRegex satisfies matches(., $r, 'i'))]
+    )
+    let $descendants2 :=
+        if (empty($includedNamesRegex)) then $descendants
+        else $descendants[ancestor-or-self::* intersect $includedNodes]
+        
+    let $descendants3 := 
+        if (empty($excludedNodes)) then $descendants2
+        else $descendants2[not(ancestor-or-self::* intersect $excludedNodes)]
+    
+    for $d in $descendants3 return
+    let $ancos := $d/ancestor-or-self::node()[. >> $context]
+    let $steps :=        
+        if ($nameKind eq 'lname') then 
+            $ancos/concat(self::attribute()/'@', local-name(.))
+        else if ($nameKind eq 'jname') then 
+            $ancos/concat(self::attribute()/'@', 
+                let $raw := f:unescape-json-name(local-name(.))
+                return if (not(contains($raw, '/'))) then $raw else concat('"', $raw, '"')
+            )
+        else $ancos/concat(self::attribute()/'@', name(.))
+    return string-join($steps, '/')
+};        
+
+(:~
+ : Returns the parent name of a node. If $localNames is true, the local name is returned, 
+ : otherwise the lexical names. 
+ :
+ : @param node a node
+ : @param localName if true, the local name is returned, otherwise the lexical name
+ : @return the parent name
+ :)
+declare function f:name-path($nodes as node()*, 
+                             $nameKind as xs:string?,   (: name | lname | jname :) 
+                             $numSteps as xs:integer?)
+        as xs:string* {
+    for $node in $nodes return
+    
+    (: _TO_DO_ Remove hack when BaseX Bug is removed; return to: let $nodes := $node/ancestor-or-self::node() :)        
+    let $ancos := 
+        let $all := $node/ancestor-or-self::node()
+        let $dnode := $all[. instance of document-node()]
+        return ($dnode, $all except $dnode)
+    let $steps := 
+        
+        if ($nameKind eq 'lname') then 
+            $ancos/concat(self::attribute()/'@', local-name(.))
+        else if ($nameKind eq 'jname') then 
+            $ancos/concat(self::attribute()/'@', 
+                let $raw := f:unescape-json-name(local-name(.))
+                return if (not(contains($raw, '/'))) then $raw else concat('"', $raw, '"')
+            )
+        else 
+            $ancos/concat(self::attribute()/'@', name(.))
+    let $steps := if (empty($numSteps)) then $steps else subsequence($steps, count($steps) + 1 - $numSteps)
+    return string-join($steps, '/')
+};        
+
+(:~
+ : Returns the local name of a lexical QName.
+ :
+ : @param name a lexical QName
+ : @return the name with the prefix removed
+ :)
+declare function f:remove-prefix($name as xs:string?)
+        as xs:string? {
+    $name ! replace(., '^.+:', '')
+};        
+
+(:~
+ : Returns those atomic items which are in the right value, but not in the left one. 
+ :
+ : @param leftValue a value
+ : @param rightValue another value 
+ : @return the items in the right value, but not the left one
+ :)
+declare function f:rightValueOnly($leftValue as item()*,
+                                  $rightValue as item()*)
+    as item()* {
+    $rightValue[not(. = $leftValue)]
+};
+
+(:~
+ : Truncates a string if longer than a maximum length, appending '...'.
+ :
+ : @param name a lexical QName
+ : @return the name with the prefix removed
+ :)
+declare function f:truncate($string as xs:string?, $len as xs:integer, $flag as xs:string?)
+        as xs:string? {
+    $string ! substring($string, 1, $len) || ' ...'[string-length($string) gt $len]
+};        
+
+declare function f:hlistEntry($items as item()*)
+        as xs:string {
+    let $sep := codepoints-to-string(30000)
+    return
+        string-join($items, $sep)
+};
+
+(:~
+ : Transforms a sequence of value into an indented list. Each value is a concatenated 
+ : list of items from subsequent levels of hierarchy. Example:
+ :
+ : foo#bar
+ : foo#bar2#bar3
+ : foo#zoo#zoo2
+ : boo#len
+ : zoo
+ : =>
+ : foo
+ : . bar2
+ : . . bar3
+ : . zoo
+ . . . zoo2
+ . boo
+ . . len
+ . zoo
+ :)
+declare function f:hlist($values as xs:string*, 
+                         $headers as xs:string*,
+                         $emptyLines as xs:string?)
+        as xs:string {
+    let $sep := codepoints-to-string(30000) (:  ($sep, '#')[1] :)        
+    let $values := $values[string(.)] => sort()    
+    let $emptyLineFns :=
+        if (not($emptyLines)) then ()
+        else
+            map:merge(
+                for $i in 1 to string-length($emptyLines)
+                let $lineCount := substring($emptyLines, $i, 1) ! xs:integer(.)
+                where $lineCount
+                return
+                    map:entry($i - 1, function() {for $j in 1 to $lineCount return ''})
+            )                    
+            
+    return
+        let $lines := f:hlistRC(0, $values, $sep, $emptyLineFns)
+        return (
+            if (empty($headers)) then () else 
+                let $maxLen := min(( (($lines ! string-length(.) => max()), 80)[1], 100))
+                let $sepline := string-join(for $i in 1 to $maxLen return '=', '')
+                return (
+                    $sepline,        
+                    for $header at $pos in $headers
+                    let $prefix := (for $i in 1 to $pos - 1 return '.  ') => string-join('')
+                    return $prefix || $header,
+                    $sepline,
+                    ''                    
+                ),
+            $lines) => string-join('&#xA;')
+};
+
+declare function f:hlistRC($level as xs:integer, 
+                           $values as xs:string*, 
+                           $sep as xs:string,
+                           $emptyLineFns as map(*)?)
+        as xs:string* {
+    let $prefix := (for $i in 1 to $level return '.  ') => string-join('')
+    return
+        if (not(some $value in $values satisfies contains($value, $sep))) then 
+            for $value in $values
+            group by $v := $value
+            let $suffix := count($value)[. ne 1] ! concat(' (', ., ')')
+            let $parts := tokenize($v, '~~~')
+            return 
+                if (count($parts) eq 1) then $prefix || $v || $suffix
+                else
+                    for $part in $parts
+                    return $prefix || $part
+        else
+            for $value in $values
+            (: group by $groupValue := (substring-before($value, $sep)[string()], $value)[1] :)
+            group by $groupValue := replace($value, '(^.*?)' || $sep || '.*', '$1', 's')
+            let $contentValue := $value ! substring-after(., $sep)[string()]           
+            order by $groupValue
+            let $parts := tokenize($groupValue, '~~~')
+            return (
+                if (count($parts) eq 1) then concat($prefix, $groupValue)
+                else for $part in $parts return ($prefix || $part),
+                f:hlistRC($level + 1, $contentValue, $sep, $emptyLineFns),
+                $emptyLineFns ! map:get(., $level) ! .()
+                (:''[$level eq 0] :)
+            )
+};
+
+
+(:~
+ :
+ : ===    J S O N   r e l a t e d ===
+ :
+ :)
+
+(:~
+ : Resolves a JSON reference to a JSON object. The reference is
+ : a JSON Pointer (https://tools.ietf.org/html/rfc6901).
+ :
+ : @param reference the reference string
+ : @param doc a node from the document used as congtext
+ : @return the referenced schema object, or the empty string if no such object is found
+ :)
+declare function f:resolveJsonRef($reference as xs:string?, 
+                                  $doc as element())
+        as element()? {
+    if (not($reference)) then () else
+    
+    let $doc := $doc/ancestor-or-self::*[last()]
+    let $withFragment := contains($reference, '#')
+    let $resource := 
+        if ($withFragment) then substring-before($reference, '#') else $reference
+    let $path := 
+        if ($withFragment) then replace($reference, '.*?#/', '') else ()
+    let $context :=
+        if (not($resource)) then $doc else
+            try {
+                resolve-uri($resource, $doc/base-uri(.)) 
+                ! json:doc(.)/*
+            } catch * {
+                (: Second try - replace '-' with '/' in base URI;
+                   motivation: maybe this document has been downloaded to a file
+                   with a name obtained by replacing in an internet address
+                   / with - :)
+                let $baseUri2 := $doc/base-uri(.) ! replace(., '-', '/')
+                return
+                    try {
+                        let $baseUri2 := $doc/base-uri(.) ! replace(., '-', '/')
+                        let $dirPart := replace($baseUri2, '/[^/]+$', '')
+                        let $uri := resolve-uri($resource, $baseUri2)
+                        let $uriAdjusted := replace($uri, $dirPart||'/', $dirPart||'-')
+                        return json:doc($uriAdjusted)/*
+                    } catch * {
+                        trace((), '___WARNING - CANNOT RESOLVE REFERENCE: ' || $reference ||
+                              ' ; CONTEXT: ' || $doc/base-uri(.))
+                    }                     
+            }
+    where $context            
+    return   
+        if (not($path)) then $context else
+            let $steps := tokenize($path, '\s*/\s*')
+            let $target := f:resolveJsonRefRC($steps, $context)
+            return 
+                if ($target/_0024ref) then 
+                    $target/_0024ref/f:resolveJsonRef(., $doc)
+                else $target
+};
+
+(:~
+ : Recursive helper function of 'resolveJsonRef'.
+ :
+ : @param steps the steps of the path (JSON Pointer steps)
+ : @param context the context in which to resolve the path
+ : @return the targets addressed by the path
+ :)
+declare function f:resolveJsonRefRC($steps as xs:string+, 
+                                    $context as element()*)
+        as element()* {
+    let $head := head($steps)
+    let $tail := tail($steps)
+    let $refToken := $head 
+                     ! web:decode-url(.)
+                     ! replace(., '~1', '/') 
+                     ! replace(., '~0', '~')
+    let $elem :=
+        if ($context/@type eq 'array') then
+            if (matches($refToken, '^\d+$')) then $context/_[1 + xs:integer($refToken)]
+            else () (: Invalid JSON Pointer syntax :)
+        else 
+            let $elemName := $refToken ! convert:encode-key(.)
+            return $context/*[name() eq $elemName]
+    return
+        if (not($elem)) then ()
+        else if (empty($tail)) then $elem
+        else f:resolveJsonRefRC($tail, $elem)
+};
+
+(:~
+ : Resolves an XSD type reference to the referenced type definition.
+ :)
+declare function f:resolveXsdTypeRef($reference as attribute(type), 
+                                     $schema as element(xs:schema)?)
+        as element()? {
+    if (not($reference)) then () else
+    
+    let $schema := ($schema, $reference/ancestor::xs:schema[1])[1]
+    let $refQname := $reference/resolve-QName(., ..)
+    let $refNs := string(namespace-uri-from-QName($refQname))
+    let $refName := local-name-from-QName($refQname)
+    let $result := f:resolveXsdTypeRefRC($refNs, $refName, $schema, (), (), ())
+    return $result[self::xs:simpleType, xs:complexType][1]
+};
+
+declare function f:resolveXsdTypeRefRC($refNs as xs:string,
+                                       $refName as xs:string,
+                                       $schema as element(xs:schema),
+                                       $schemasSameLevel as element(xs:schema)*,
+                                       $chameleonNs as xs:string?,
+                                       $visited as element(xs:schema)*)
+        as element()? {
+    if ($visited intersect $schema) then $visited else
+    
+    let $tns := ($schema/@targetNamespace, $chameleonNs, '')[1]
+    let $typeDefHere :=
+        if ($refNs ne $tns) then () else
+            $schema/(xs:simpleType, xs:complexType)[@name eq $refName]            
+    return
+        if ($typeDefHere) then $typeDefHere else
+
+            let $visitedNew := ($visited, $schema)
+            let $resultSSL := 
+                if (not($schemasSameLevel)) then () else
+                    f:resolveXsdTypeRefRC($refNs, $refName, 
+                        head($schemasSameLevel), tail($schemasSameLevel), $chameleonNs, $visitedNew)
+            let $typeDefSSL := $resultSSL[self::xs:simpleType, self::xs:complexType]
+            return
+                if ($typeDefSSL) then $typeDefSSL
+                else                
+                    let $visitedNew := ($visitedNew, $resultSSL)
+                    let $schemaLocationsNextLevel :=
+                        if ($tns eq $refNs) then $schema/xs:include/@schemaLocation
+                        else $schema/xs:import[@namespace eq $tns]/@schemaLocation
+                    let $schemasNextLevel := 
+                        $schemaLocationsNextLevel/resolve-uri(., ..)
+                        ! (try {doc(.)} catch * {()})
+                        [not(. intersect $visited)]
+                    let $resultSNL := 
+                        if (not($schemasNextLevel)) then () else
+                            f:resolveXsdTypeRefRC($refNs, $refName, 
+                                head($schemasNextLevel), tail($schemasNextLevel), $tns, $visitedNew)
+                    return $resultSNL                                
+};        
+
+(:~
+ : Resolves a JSON Schema allOf group.
+ :
+ : @param reference the reference string
+ : @param oad the OpenAPI documents considered
+ : @return the referenced schema object, or the empty string if no such object is found
+ :)
+declare function f:resolveJsonAllOf($allOf as element(), 
+                                    $doc as element(json)+)
+        as element()* {
+    for $subschema in $allOf/_        
+    return
+        if ($subschema[_0024ref]) then 
+            let $effective := f:resolveJsonRef($subschema/_0024ref, $doc)
+            return
+                if ($effective/allOf) then $effective/allOf/f:resolveJsonAllOf(., $doc)
+                else $effective
+        else if ($subschema/_allOf) then $subschema/allOf/f:resolveJsonAllOf(., $doc)
+        else $subschema
+};
+
+(:~
+ :
+ : ===    U t i l i t i e s ===
+ :
+ :)
+
+(:~
+ : Returns namespace nodes which apply to all elements in the
+ : input sequence of elements.
+ :
+ : @param elems a sequence of elements
+ : @return a sequence of namespace nodes
+ :)
+declare function f:extractNamespaceNodes($elems as element()*)
+        as namespace-node()* {
+    let $nspairs := (
+        for $elem in $elems
+        let $prefixes := in-scope-prefixes($elem)
+        let $nspair := $prefixes ! concat(., '#', namespace-uri-for-prefix(., $elem))
+        return $nspair 
+    ) => distinct-values()
+    
+    for $nspair in $nspairs
+    group by $nsuri := substring-after($nspair, '#')
+    where 1 eq ($nspair => distinct-values() => count())
+    return
+        let $prefix := $nspair[1] ! substring-before(., '#')
+        return
+            if ($prefix eq '' and 
+                (some $elem in $elems satisfies not('' = in-scope-prefixes($elem)))) 
+            then () else namespace {$prefix} {$nsuri}
+               
+};
 

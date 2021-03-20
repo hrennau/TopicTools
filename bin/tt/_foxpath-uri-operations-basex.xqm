@@ -17,10 +17,14 @@ Group: resource retrieval
   
 :)
 module namespace f="http://www.ttools.org/xquery-functions";
-import module namespace i="http://www.ttools.org/xquery-functions" at 
-    "_foxpath-processorDependent.xqm",
-    "_foxpath-util.xqm";
-    
+
+import module namespace i="http://www.ttools.org/xquery-functions" 
+at  "_foxpath-processorDependent.xqm";
+
+import module namespace util="http://www.ttools.org/xquery-functions/util" 
+at  "_foxpath-util.xqm";
+
+
 (: 
  : ===============================================================================
  :
@@ -276,9 +280,12 @@ declare function f:descendantUriCollection_basex($uri as xs:string,
             (: folders - all path prefixes of all files :)
             let $folders := distinct-values(
                 for $resource in $files
+                let $steps := tokenize($resource, '/')[position() lt last()]
+                for $length in 1 to count($steps)
                 return
-                    tokenize($resource, '/')[position() lt last()] 
-                    => string-join('/')
+                    $steps[position() le $length] => string-join('/')
+(:                  hjr, 20201015: bugfix, copied from _foxpath-uri-operations-archive.xqm - 
+                                   deliver *all* paths (consisting of 1, 2, ... steps) :)                
             )
             return
                 if ($kindFilter eq 'dir') then $folders

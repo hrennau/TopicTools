@@ -1,4 +1,4 @@
-module namespace f="http://www.ttools.org/xquery-functions";
+module namespace f="http://www.ttools.org/xquery-functions/util";
 
 declare namespace fox="http://www.foxpath.org/ns/annotations";
 
@@ -18,6 +18,78 @@ declare variable $f:PREDECLARED_NAMESPACES := (
     <namespace prefix="wsdl" uri="http://schemas.xmlsoap.org/wsdl/"/>,
     <namespace prefix="docbook" uri="http://docbook.org/ns/docbook"/>    
 );
+
+(:~
+ : Translates a whitespace-separated list of string patterns
+ : into a list of regular expressions and a list of literal strings.
+ :
+ : @param patterns a list of names and/or patterns, whitespace concatenated
+ : @param ignoreCase if true, the filter ignores case 
+ : @return a map with entries 'names', 'regexes' and 'flags' 
+ :)
+declare function f:compileNameFilter($patterns as xs:string?, 
+                                     $ignoreCase as xs:boolean?)
+        as map(xs:string, item()*)? {
+    if (not($patterns)) then () else
+    
+    let $items := $patterns ! normalize-space(.) ! tokenize(.)
+    let $names := 
+        let $raw := $items[not(contains(., '*')) and not(contains(., '?'))]
+        return
+            if (not($ignoreCase)) then $raw else $raw ! lower-case(.)
+    let $regexes := $items[contains(., '*') or contains(., '?')]
+    ! replace(., '\*', '.*')
+    ! replace(., '\?', '.')
+    ! concat('^', ., '$')
+    let $flags := if ($ignoreCase) then 'i' else ''     
+    return 
+        map{'names': $names, 'regexes': $regexes, 'empty': empty(($names, $regexes)), 'ignoreCase': $ignoreCase}
+};
+
+(:~
+ : Matches a string against a name filter constructed by `patternsToNameFilter()`.
+ :
+ : @param string the string to match
+ : @param nameFilter the name filter 
+ : @return true if the name filter is matched, false otherwise
+ :)
+declare function f:matchesNameFilter($string as xs:string, 
+                                     $nameFilter as map(xs:string, item()*)?)
+        as xs:boolean {
+    let $flags := if ($nameFilter?ignoreCase) then 'i' else ''
+    let $string := if ($nameFilter?ignoreCase) then lower-case($string) else $string 
+    return
+        $nameFilter?empty
+        or exists($nameFilter?names) and $string = $nameFilter?names
+        or exists($nameFilter?regexes) and (some $r in $nameFilter?regexes satisfies matches($string, $r, $flags))
+};
+
+(:~
+ : Returns all items contained in every array in a given
+ : sequence of arrays. Array members are evaluated and
+ : returned in atomized form.
+ :
+ : @param sequences a sequence of arrays
+ : @return the items contained by all arrays
+ :)
+declare function f:atomIntersection($sequences as array(item()*)*)
+        as item()* {
+    let $seq1 := head($sequences)
+    let $seq2 := tail($sequences)
+    return fold-left($seq2, array:flatten($seq1), 
+        function($sofar, $new) {
+            let $t1 := prof:current-ms()
+            let $newItems := array:flatten($new)
+            let $t2 := prof:current-ms()
+            let $newAccum := $sofar[. = $newItems]
+            
+            let $t3 := prof:current-ms()
+            let $_DEBUG := trace(concat('_NEXT_INTERSECTION; #OLD_ITEMS: ', count($sofar), ' ; #NEW_ITEMS: ', count($newItems)))            
+            let $_DEBUG := trace($t2 - $t1, 't(flatten): ')
+            let $_DEBUG := trace($t3 - $t2, 't(filter) : ')
+            
+            return $newAccum})
+};
 
 (:
 declare variable $f:STDLIB := map{
@@ -169,6 +241,17 @@ declare function f:getSvnRootUriRC($prefix as xs:string, $steps as xs:string)
         if (proc:execute('svn', ('list', $tryPath))/code = '0') then $tryPath
         else f:getSvnRootUriRC($tryPath || '/', substring($steps, 2 + string-length($step1)))
 };        
+
+(:~
+ : Maps an atomic value to a boolean value. Intended for convenient
+ : entry of boolean parameters.
+ :)
+declare function f:booleanValue($s as xs:anyAtomicType?, $default as xs:boolean?) as xs:boolean {
+    if (empty($s)) then boolean($default)
+    else if ($s instance of xs:boolean) then $s
+    else if ($s instance of xs:decimal) then $s ne 0
+    else string($s) = ('true', 'y', '1')
+};
 
 (:~
  : Creates a copy of a node with all "whitespace only" text nodes
