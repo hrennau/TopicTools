@@ -278,7 +278,8 @@ declare function m:_parseNameFilterItem($s as xs:string, $atts as attribute()*)
     let $patternExp := 
         if ($isRegex) then $patternRaw 
         else 
-            replace(replace($patternRaw, '\*', '.*'), '\?', '.')
+            let $escaped := replace($patternRaw, '[{}()]', '\\$0')
+            return replace(replace($escaped, '\*', '.*'), '\?', '.')
         let $pattern := concat('^', $patternExp, '$')
         return
             <filter pattern="{$pattern}" options="{$options}">{$atts}</filter>

@@ -135,7 +135,7 @@ declare function f:getInitialParsingContext($options as map(*)?)
     let $uriTrees :=
         if (starts-with($uriTreesDir, 'basex://')) then
             let $db := trace(substring($uriTreesDir, 9) , 'DB: ')
-            return db:open($db)
+            return db:get($db)
         else
             try {
                 file:list($uriTreesDir, false(), 'uri-trees-*') ! concat($uriTreesDir, '/', .) ! doc(.)/*
